@@ -1,0 +1,4 @@
+#/bin/sh
+iptables -F OUTPUT
+iptables -A OUTPUT -j NFLOG --nflog-group 1 --nflog-range 20 --nflog-threshold 50 --nflog-prefix "FORWARD"
+iptables -vnL OUTPUT
