@@ -9,9 +9,9 @@ package main
 
 import (
 	"log"
+	"net"
 	"syscall"
 	"unsafe"
-	"net"
 )
 
 /*
@@ -44,7 +44,7 @@ static int _callback_register(struct nflog_g_handle *gh, void *data) {
 import "C"
 
 const (
-	MAX_CAPLEN = 4096
+	MAX_CAPLEN     = 4096
 	McastGroupIPv4 = 4
 	McastGroupIPv6 = 6
 
@@ -93,22 +93,22 @@ func (i *IpPacketInfo) Length(packet []byte) int {
 	return int(packet[i.LengthOffset])<<8 + int(packet[i.LengthOffset+1])
 }
 
-var Ip4Packet = &IpPacketInfo{ 
+var Ip4Packet = &IpPacketInfo{
 	// 20 bytes IPv4 Header - http://en.wikipedia.org/wiki/IPv4
-	LengthOffset : 2,
-	SrcOffset    : 12,
-	DstOffset    : 16,
-	HeaderSize   : 20,
-	AddrLen      : 4,
+	LengthOffset: 2,
+	SrcOffset:    12,
+	DstOffset:    16,
+	HeaderSize:   20,
+	AddrLen:      4,
 }
 
-var Ip6Packet = &IpPacketInfo{ 
+var Ip6Packet = &IpPacketInfo{
 	// 40 bytes IPv6 Header - http://en.wikipedia.org/wiki/IPv6_packet
-	LengthOffset : 4,
-	SrcOffset    : 8,
-	DstOffset    : 24,
-	HeaderSize   : 40,
-	AddrLen      : 16,
+	LengthOffset: 4,
+	SrcOffset:    8,
+	DstOffset:    24,
+	HeaderSize:   40,
+	AddrLen:      16,
 }
 
 //export goCallback
@@ -176,7 +176,7 @@ func NewNfLog() *NfLog {
 	}
 
 	nflog := &NfLog{
-		h: h,
+		h:  h,
 		fd: int(C.nflog_fd(h)),
 	}
 	nflog.makeGroup(McastGroupIPv4, Ip4Packet.HeaderSize)
@@ -193,7 +193,7 @@ func (nflog *NfLog) Loop() {
 			log.Printf("Recvfrom failed: %s", e)
 		}
 		// Handle messages in packet
-		C.nflog_handle_packet(nflog.h, (* C.char)(unsafe.Pointer(&buf[0])), (C.int)(nr));
+		C.nflog_handle_packet(nflog.h, (*C.char)(unsafe.Pointer(&buf[0])), (C.int)(nr))
 	}
 
 }
