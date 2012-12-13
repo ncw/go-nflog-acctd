@@ -1,4 +1,8 @@
 #/bin/sh
 iptables -F OUTPUT
-iptables -A OUTPUT -j NFLOG --nflog-group 1 --nflog-range 20 --nflog-threshold 50 --nflog-prefix "FORWARD"
+iptables -A OUTPUT -j NFLOG --nflog-group 4 --nflog-range 20 --nflog-threshold 50 --nflog-prefix "IPv4"
 iptables -vnL OUTPUT
+
+ip6tables -F OUTPUT
+ip6tables -A OUTPUT -j NFLOG --nflog-group 6 --nflog-range 40 --nflog-threshold 50 --nflog-prefix "IPv6"
+ip6tables -vnL OUTPUT
