@@ -3,11 +3,21 @@ package main
 import (
 	"log"
 	"runtime"
+	"net"
+)
+
+const (
+	IPv6PrefixLength = 64	// Only account to /64 for IPv6
 )
 
 func accounting(Output chan *Packet) {
+	ip6mask := net.CIDRMask(IPv6PrefixLength, 128)
 	for p := range Output {
 		log.Printf("%s\n", p)
+		if p.IpVersion == 6 {
+			p.Addr = p.Addr.Mask(ip6mask)
+			log.Printf(">> %s\n", p)
+		}
 	}
 }
 
