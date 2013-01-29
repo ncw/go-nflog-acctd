@@ -23,7 +23,7 @@ import (
 #include <libnetfilter_log/libnetfilter_log.h>
 
 // Forward definition of Go function
-void goCallback(char *, int, void *);
+void goCallback(void *, char *, int, void *);
 
 // Callback to hand the data back to Go
 static int _callback(struct nflog_g_handle *gh, struct nfgenmsg *nfmsg, struct nflog_data *nfd, void *data) {
@@ -32,7 +32,7 @@ static int _callback(struct nflog_g_handle *gh, struct nfgenmsg *nfmsg, struct n
 	int payload_len = nflog_get_payload(nfd, &payload);
 	// Could read timestamp nflog_get_timestamp(nfd, &tv)
 	// Could read devices: nflog_get_indev(nfd) and nflog_get_outdev(nfd)
-	goCallback(prefix, payload_len, payload);
+	goCallback(data, prefix, payload_len, payload);
 	return 0;
  }
 
@@ -44,14 +44,7 @@ static int _callback_register(struct nflog_g_handle *gh, void *data) {
 import "C"
 
 const (
-	MAX_CAPLEN     = 4096
-	McastGroupIPv4 = 4
-	McastGroupIPv6 = 6
-
-	// How to read the IP version number from an IP packet
-	IpVersion      = 0
-	IpVersionShift = 4
-	IpVersionMask  = 0x0f
+	MAX_CAPLEN = 4096
 )
 
 // NfLog
@@ -62,80 +55,90 @@ type NfLog struct {
 	fd int
 	// Group handles
 	ghs []*C.struct_nflog_g_handle
+	// The multicast address
+	McastGroup int
+	// Flavour of IP we are expecting, 4 or 6
+	IpVersion byte
+	// Are we account the source or the destination address
+	Direction IpDirection
+	// Flavour of IP packet we are decoding
+	IpPacket *IpPacketInfo
+	// Channel we are sending into
+	Output chan *Packet
 }
 
-// Current nflog error
-func nflog_error() error {
-	return syscall.Errno(C.nflog_errno)
+// Create a new NfLog
+//
+// McastGroup is that specified in ip[6]tables
+// IPv6 is a flag to say if it is IPv6 or not
+// Direction is to monitor the source address or the dest address
+func NewNfLog(McastGroup int, IpVersion byte, Direction IpDirection, Output chan *Packet) *NfLog {
+	h := C.nflog_open()
+	if h == nil {
+		log.Fatal("Failed to open NFLOG: %s", nflog_error())
+	}
+	log.Println("Binding nfnetlink_log to AF_INET")
+	if C.nflog_bind_pf(h, C.AF_INET) < 0 {
+		log.Fatal("nflog_bind_pf failed: %s", nflog_error())
+	}
+
+	nflog := &NfLog{
+		h:          h,
+		fd:         int(C.nflog_fd(h)),
+		McastGroup: McastGroup,
+		IpVersion:  IpVersion,
+		Direction:  Direction,
+		Output:     Output,
+	}
+	switch IpVersion {
+	case 4:
+		nflog.IpPacket = Ip4Packet
+	case 6:
+		nflog.IpPacket = Ip6Packet
+	default:
+		log.Fatalf("Bad IP version %d", IpVersion)
+	}
+	nflog.makeGroup(McastGroup, nflog.IpPacket.HeaderSize)
+	return nflog
 }
 
-// Describe the header of an IPv4 or IPv6 packet
-type IpPacketInfo struct {
-	LengthOffset int
-	SrcOffset    int
-	DstOffset    int
-	HeaderSize   int
-	AddrLen      int
-}
-
-// Read the source address from an IP packet
-func (i *IpPacketInfo) Src(packet []byte) net.IP {
-	return net.IP(packet[i.SrcOffset : i.SrcOffset+i.AddrLen])
-}
-
-// Read the destination address from an IP packet
-func (i *IpPacketInfo) Dst(packet []byte) net.IP {
-	return net.IP(packet[i.DstOffset : i.DstOffset+i.AddrLen])
-}
-
-// Read the length from an IP packet
-func (i *IpPacketInfo) Length(packet []byte) int {
-	return int(packet[i.LengthOffset])<<8 + int(packet[i.LengthOffset+1])
-}
-
-var Ip4Packet = &IpPacketInfo{
-	// 20 bytes IPv4 Header - http://en.wikipedia.org/wiki/IPv4
-	LengthOffset: 2,
-	SrcOffset:    12,
-	DstOffset:    16,
-	HeaderSize:   20,
-	AddrLen:      4,
-}
-
-var Ip6Packet = &IpPacketInfo{
-	// 40 bytes IPv6 Header - http://en.wikipedia.org/wiki/IPv6_packet
-	LengthOffset: 4,
-	SrcOffset:    8,
-	DstOffset:    24,
-	HeaderSize:   40,
-	AddrLen:      16,
-}
-
+// Receive data from nflog on a callback from C
+//
 //export goCallback
-func goCallback(cprefix *C.char, payload_len C.int, payload unsafe.Pointer) {
+func goCallback(_nflog unsafe.Pointer, cprefix *C.char, payload_len C.int, payload unsafe.Pointer) {
+	nflog := (*NfLog)(_nflog)
 	//prefix := C.GoString(cprefix)
 	packet := C.GoBytes(payload, payload_len)
 	// Peek the IP Version out of the header
 	ip_version := packet[IpVersion] >> IpVersionShift & IpVersionMask
 	// log.Printf("Received %s: size %d, IPv%d", prefix, payload_len, ip_version)
-	var i *IpPacketInfo
-	switch ip_version {
-	case 4:
-		i = Ip4Packet
-	case 6:
-		i = Ip6Packet
-	default:
+	if ip_version != nflog.IpVersion {
 		log.Printf("Bad IP version: %d", ip_version)
 		return
 	}
+	i := nflog.IpPacket
 	if len(packet) < i.HeaderSize {
 		log.Printf("Short IPv%s packet %d/%d bytes", ip_version, len(packet), i.HeaderSize)
 		return
 	}
-	src := i.Src(packet)
-	dst := i.Dst(packet)
-	length := i.Length(packet)
-	log.Printf("IPv%d message From %s To %s Size %d", ip_version, src, dst, length)
+
+	var addr net.IP
+	if nflog.Direction {
+		addr = i.Src(packet)
+	} else {
+		addr = i.Dst(packet)
+	}
+	nflog.Output <- &Packet{
+		Direction: nflog.Direction,
+		Addr:      addr,
+		Length:    i.Length(packet),
+		IpVersion: ip_version,
+	}
+}
+
+// Current nflog error
+func nflog_error() error {
+	return syscall.Errno(C.nflog_errno)
 }
 
 // Connects to the group specified with the size
@@ -147,7 +150,7 @@ func (nflog *NfLog) makeGroup(group, size int) {
 	}
 
 	//C.nflog_callback_register(gh, nflog_callback, nil)
-	C._callback_register(gh, nil)
+	C._callback_register(gh, unsafe.Pointer(nflog))
 
 	// FIXME set nflog_set_timeout?
 
@@ -162,26 +165,6 @@ func (nflog *NfLog) makeGroup(group, size int) {
 	}
 
 	nflog.ghs = append(nflog.ghs, gh)
-}
-
-// Open the nflog
-func NewNfLog() *NfLog {
-	h := C.nflog_open()
-	if h == nil {
-		log.Fatal("Failed to open NFLOG: %s", nflog_error())
-	}
-	log.Println("Binding nfnetlink_log to AF_INET")
-	if C.nflog_bind_pf(h, C.AF_INET) < 0 {
-		log.Fatal("nflog_bind_pf failed: %s", nflog_error())
-	}
-
-	nflog := &NfLog{
-		h:  h,
-		fd: int(C.nflog_fd(h)),
-	}
-	nflog.makeGroup(McastGroupIPv4, Ip4Packet.HeaderSize)
-	nflog.makeGroup(McastGroupIPv6, Ip6Packet.HeaderSize)
-	return nflog
 }
 
 // Receive packets in a loop forever
