@@ -75,11 +75,11 @@ type NfLog struct {
 func NewNfLog(McastGroup int, IpVersion byte, Direction IpDirection, Output chan *Packet) *NfLog {
 	h := C.nflog_open()
 	if h == nil {
-		log.Fatal("Failed to open NFLOG: %s", nflog_error())
+		log.Fatalf("Failed to open NFLOG: %s", nflog_error())
 	}
 	log.Println("Binding nfnetlink_log to AF_INET")
 	if C.nflog_bind_pf(h, C.AF_INET) < 0 {
-		log.Fatal("nflog_bind_pf failed: %s", nflog_error())
+		log.Fatalf("nflog_bind_pf failed: %s", nflog_error())
 	}
 
 	nflog := &NfLog{
@@ -146,7 +146,7 @@ func (nflog *NfLog) makeGroup(group, size int) {
 	log.Printf("Binding this socket to group %d", group)
 	gh := C.nflog_bind_group(nflog.h, (C.u_int16_t)(group))
 	if gh == nil {
-		log.Fatal("nflog_bind_group failed: %s", nflog_error())
+		log.Fatalf("nflog_bind_group failed: %s", nflog_error())
 	}
 
 	//C.nflog_callback_register(gh, nflog_callback, nil)
@@ -156,12 +156,12 @@ func (nflog *NfLog) makeGroup(group, size int) {
 
 	// FIXME do we need this? Should set large
 	if C.nflog_set_qthresh(gh, 1024) < 0 {
-		log.Fatal("nflog_set_qthresh failed: %s", nflog_error())
+		log.Fatalf("nflog_set_qthresh failed: %s", nflog_error())
 	}
 
 	log.Printf("Setting copy_packet mode to %d bytes", size)
 	if C.nflog_set_mode(gh, C.NFULNL_COPY_PACKET, (C.uint)(size)) < 0 {
-		log.Fatal("nflog_set_mode failed: %s", nflog_error())
+		log.Fatalf("nflog_set_mode failed: %s", nflog_error())
 	}
 
 	nflog.ghs = append(nflog.ghs, gh)
