@@ -56,26 +56,7 @@ var Ip6Packet = &IpPacketInfo{
 	AddrLen:      16,
 }
 
-// Account is packet which needs accounting
-type Packet struct {
-	// Direction: Source address (true) or destination address (false)
-	Direction IpDirection
-	// The address
-	Addr net.IP
-	// Length of the packet
-	Length int
-	// IP Version (4 or 6)
-	IpVersion byte
-}
-
-// Convert a packet to printable
-func (p *Packet) String() string {
-	return fmt.Sprintf("IPv%d message %s Addr %s Size %d", p.IpVersion, p.Direction, p.Addr, p.Length)
-}
-
-// Check it implements the interface
-var _ fmt.Stringer = &Packet{}
-
+// Represent a direction for IP traffic
 type IpDirection bool
 
 func (sod IpDirection) String() string {

@@ -63,8 +63,8 @@ type NfLog struct {
 	Direction IpDirection
 	// Flavour of IP packet we are decoding
 	IpPacket *IpPacketInfo
-	// Channel we are sending into
-	Output chan *Packet
+	// Accounting
+	a *Accounting
 	// Quit the loop
 	quit bool
 }
@@ -74,7 +74,7 @@ type NfLog struct {
 // McastGroup is that specified in ip[6]tables
 // IPv6 is a flag to say if it is IPv6 or not
 // Direction is to monitor the source address or the dest address
-func NewNfLog(McastGroup int, IpVersion byte, Direction IpDirection, Output chan *Packet) *NfLog {
+func NewNfLog(McastGroup int, IpVersion byte, Direction IpDirection, a *Accounting) *NfLog {
 	h := C.nflog_open()
 	if h == nil {
 		log.Fatalf("Failed to open NFLOG: %s", nflog_error())
@@ -90,7 +90,7 @@ func NewNfLog(McastGroup int, IpVersion byte, Direction IpDirection, Output chan
 		McastGroup: McastGroup,
 		IpVersion:  IpVersion,
 		Direction:  Direction,
-		Output:     Output,
+		a:          a,
 	}
 	switch IpVersion {
 	case 4:
@@ -130,12 +130,7 @@ func goCallback(_nflog unsafe.Pointer, cprefix *C.char, payload_len C.int, paylo
 	} else {
 		addr = i.Dst(packet)
 	}
-	nflog.Output <- &Packet{
-		Direction: nflog.Direction,
-		Addr:      addr,
-		Length:    i.Length(packet),
-		IpVersion: ip_version,
-	}
+	nflog.a.Packet(nflog.Direction, addr, i.Length(packet), ip_version)
 }
 
 // Current nflog error

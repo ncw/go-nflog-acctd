@@ -39,7 +39,6 @@ var (
 	IPv6DestGroup    = flag.Int("ip6-dst-group", 0, "NFLog Group to read IPv6 packets and account the destination address")
 	IPv6PrefixLength = flag.Int("ip6-prefix-length", 64, "Size of the IPv6 prefix to account to, default is /64")
 	Cpus             = flag.Int("cpus", 0, "Number of CPUs to use - default 0 is all of them")
-	ChannelSize      = flag.Int("channel-size", 32768, "Size of buffer for incoming accounting packets")
 	UseSyslog        = flag.Bool("syslog", false, "Use Syslog for logging")
 	Debug            = flag.Bool("debug", false, "Print every single packet that arrives")
 	Interval         = flag.Duration("interval", time.Minute*5, "Interval to log stats")
@@ -71,7 +70,7 @@ type Account struct {
 //
 // The key is the net.IP which is a []byte converted to a string so it
 // can be used as a hash key
-type IpMap map[string]Account
+type IpMap map[string]*Account
 
 // Dump the IpMap to the output as a CSV
 func (Ips IpMap) Dump(w io.Writer, when time.Time) error {
@@ -102,16 +101,13 @@ func FlooredTime(t time.Time) time.Time {
 // Accounting
 type Accounting struct {
 	sync.Mutex
-	Output chan *Packet
 	StartPeriod time.Time
-	EndPeriod time.Time
-	Ips    IpMap
+	EndPeriod   time.Time
+	Ips         IpMap
 }
 
-func NewAccounting(Output chan *Packet) *Accounting {
-	a := &Accounting{
-		Output: Output,
-	}
+func NewAccounting() *Accounting {
+	a := &Accounting{}
 	a.newMaps()
 	return a
 }
@@ -125,31 +121,33 @@ func (a *Accounting) newMaps() IpMap {
 	return OldIps
 }
 
-func (a *Accounting) Run() {
-	ip6mask := net.CIDRMask(*IPv6PrefixLength, 128)
+var ip6mask = net.CIDRMask(*IPv6PrefixLength, 128)
 
-	for p := range a.Output {
-		if p.IpVersion == 6 {
-			p.Addr = p.Addr.Mask(ip6mask)
-		}
-		// Convert the net.IP which is a []byte into a string
-		// This won't be a nice UTF-8 string but will preserve
-		// the bytes and can be used as a hash key
-		key := string(p.Addr)
-		a.Lock()
-		ac := a.Ips[key]
-		if p.Direction == IpSource {
-			ac.Source.Bytes += int64(p.Length)
-			ac.Source.Packets += 1
-		} else {
-			ac.Dest.Bytes += int64(p.Length)
-			ac.Dest.Packets += 1
-		}
+// Account a single packet in a thread safe way
+func (a *Accounting) Packet(Direction IpDirection, Addr net.IP, Length int, IpVersion byte) {
+	if IpVersion == 6 {
+		Addr = Addr.Mask(ip6mask)
+	}
+	// Convert the net.IP which is a []byte into a string
+	// This won't be a nice UTF-8 string but will preserve
+	// the bytes and can be used as a hash key
+	key := string(Addr)
+	a.Lock()
+	ac := a.Ips[key]
+	if ac == nil {
+		ac = &Account{}
 		a.Ips[key] = ac
-		a.Unlock()
-		if *Debug {
-			log.Printf("%s\n", p)
-		}
+	}
+	if Direction == IpSource {
+		ac.Source.Bytes += int64(Length)
+		ac.Source.Packets += 1
+	} else {
+		ac.Dest.Bytes += int64(Length)
+		ac.Dest.Packets += 1
+	}
+	a.Unlock()
+	if *Debug {
+		log.Printf("IPv%d message %s Addr %s Size %d", IpVersion, Direction, Addr, Length)
 	}
 }
 
@@ -224,8 +222,8 @@ func main() {
 	const Day = 24 * time.Hour
 
 	// Check interval
-	if *Interval <= 0 {
-		log.Fatalf("Interval must be > 0")
+	if *Interval < time.Second {
+		log.Fatalf("Interval must be >= 1 Second")
 	}
 	if *Interval >= Day {
 		if (*Interval % Day) != 0 {
@@ -269,13 +267,13 @@ func main() {
 		defer pprof.StopCPUProfile()
 	}
 
-	Output := make(chan *Packet, *ChannelSize)
+	a := NewAccounting()
 	var nflogs []*NfLog
 
 	config := func(Group int, IpVersion byte, Direction IpDirection) {
 		if Group > 0 {
 			log.Printf("Monitoring NFLog multicast group %d for IPv%d %s", Group, IpVersion, Direction)
-			nflog := NewNfLog(Group, IpVersion, Direction, Output)
+			nflog := NewNfLog(Group, IpVersion, Direction, a)
 			nflogs = append(nflogs, nflog)
 			go nflog.Loop()
 		}
@@ -292,9 +290,7 @@ func main() {
 
 	// Loop forever accounting stuff
 	log.Printf("Starting accounting")
-	a := NewAccounting(Output)
 	go a.DumpStats()
-	go a.Run()
 
 	// Exit on keyboard interrrupt
 	ch := make(chan os.Signal, 1)
