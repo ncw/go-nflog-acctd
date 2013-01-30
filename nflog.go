@@ -1,6 +1,7 @@
 // Use cgo to interface with nflog
 //
-// Debian packages for these header files: iptables-dev and linux-libc-dev
+// Debian packages needed:
+//   apt-get install iptables-dev linux-libc-dev libnetfilter-log-dev
 
 // FIXME why the whole packet arriving and not just the headers?
 // FIXME what does copy packet do?
