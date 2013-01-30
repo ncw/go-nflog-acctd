@@ -9,8 +9,11 @@ import (
 	"log/syslog"
 	"net"
 	"os"
+	"os/signal"
 	"path"
 	"runtime"
+	"runtime/pprof"
+	"syscall"
 	"time"
 )
 
@@ -28,6 +31,7 @@ var (
 	Debug            = flag.Bool("debug", false, "Print every single packet that arrives")
 	Interval         = flag.Duration("interval", time.Minute*5, "Interval to log stats")
 	LogDirectory     = flag.String("log-directory", "/var/log/accounting", "Directory to write accounting files to.")
+	CpuProfile       = flag.String("cpuprofile", "", "Write cpu profile to file")
 
 	// Globals
 	BaseName       = path.Base(os.Args[0])
@@ -160,6 +164,17 @@ func main() {
 		log.SetOutput(w)
 	}
 
+	// Setup profiling if desired
+	if *CpuProfile != "" {
+		log.Printf("Starting cpu profiler on %q", *CpuProfile)
+		f, err := os.Create(*CpuProfile)
+		if err != nil {
+			log.Fatal(err)
+		}
+		pprof.StartCPUProfile(f)
+		defer pprof.StopCPUProfile()
+	}
+
 	Output := make(chan *Packet, *ChannelSize)
 	var nflogs []*NfLog
 
@@ -184,5 +199,17 @@ func main() {
 	// Loop forever accounting stuff
 	log.Printf("Starting accounting")
 	a := NewAccounting(Output)
-	a.Run()
+	go a.Run()
+
+	// Exit on keyboard interrrupt
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, syscall.SIGINT)
+	signal.Notify(ch, syscall.SIGTERM)
+	signal.Notify(ch, syscall.SIGQUIT)
+	s := <-ch
+	log.Printf("%s received - shutting down", s)
+	for _, nflog := range nflogs {
+		nflog.Close()
+	}
+	log.Printf("Exit")
 }
