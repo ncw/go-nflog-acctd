@@ -96,6 +96,16 @@ func (a *Accounting) newMaps() IpMap {
 
 func (a *Accounting) Run() {
 	ip6mask := net.CIDRMask(*IPv6PrefixLength, 128)
+
+	// Print the stats every Interval
+	go func() {
+		ch := time.Tick(*Interval)
+		for {
+			<-ch
+			a.Ips.Dump(os.Stdout)
+		}
+	}()
+
 	for p := range a.Output {
 		if p.IpVersion == 6 {
 			p.Addr = p.Addr.Mask(ip6mask)
@@ -115,7 +125,6 @@ func (a *Accounting) Run() {
 		a.Ips[key] = ac
 		if *Debug {
 			log.Printf("%s\n", p)
-			a.Ips.Dump(os.Stdout)
 		}
 	}
 }
