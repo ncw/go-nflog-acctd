@@ -1,5 +1,9 @@
 package main
 
+// FIXME write some stats every now and again - packets per second etc
+
+// FIXME detect overflows?
+
 import (
 	"bufio"
 	"flag"
@@ -13,8 +17,17 @@ import (
 	"path"
 	"runtime"
 	"runtime/pprof"
+	"sync"
 	"syscall"
 	"time"
+)
+
+const (
+	// Time format to output in CSV files
+	// http://stackoverflow.com/questions/804118/best-timestamp-format-for-csv-excel
+	CsvTimeFormat = "2006-01-02 15:04:05"
+	// Format to use when making filenames
+	FileTimeFormat = "2006-01-02-15-04-05"
 )
 
 // Globals
@@ -61,15 +74,16 @@ type Account struct {
 type IpMap map[string]Account
 
 // Dump the IpMap to the output as a CSV
-func (Ips IpMap) Dump(w io.Writer) error {
+func (Ips IpMap) Dump(w io.Writer, when time.Time) error {
 	wb := bufio.NewWriter(w)
-	_, err := fmt.Fprintf(wb, "IP,SourceBytes,SourcePackets,DestBytes,DestPackets\n")
+	whenString := when.Format(CsvTimeFormat)
+	_, err := fmt.Fprintf(wb, "Time,IP,SourceBytes,SourcePackets,DestBytes,DestPackets\n")
 	if err != nil {
 		return err
 	}
 	for key, ac := range Ips {
 		ip := net.IP(key)
-		_, err := fmt.Fprintf(wb, "%s,%d,%d,%d,%d\n", ip, ac.Source.Bytes, ac.Source.Packets, ac.Dest.Bytes, ac.Dest.Packets)
+		_, err := fmt.Fprintf(wb, "%s,%s,%d,%d,%d,%d\n", whenString, ip, ac.Source.Bytes, ac.Source.Packets, ac.Dest.Bytes, ac.Dest.Packets)
 		if err != nil {
 			return err
 		}
@@ -77,9 +91,20 @@ func (Ips IpMap) Dump(w io.Writer) error {
 	return wb.Flush()
 }
 
+// Returns the time rounded down to *Interval
+func FlooredTime(t time.Time) time.Time {
+	ns := t.UnixNano()
+	ns /= int64(*Interval)
+	ns *= int64(*Interval)
+	return time.Unix(0, ns)
+}
+
 // Accounting
 type Accounting struct {
+	sync.Mutex
 	Output chan *Packet
+	StartPeriod time.Time
+	EndPeriod time.Time
 	Ips    IpMap
 }
 
@@ -91,8 +116,10 @@ func NewAccounting(Output chan *Packet) *Accounting {
 	return a
 }
 
-// Make a new map returning the old one
+// Make a new map returning the old one while holding the lock
 func (a *Accounting) newMaps() IpMap {
+	a.Lock()
+	defer a.Unlock()
 	OldIps := a.Ips
 	a.Ips = make(IpMap, DefaultMapSize)
 	return OldIps
@@ -100,15 +127,6 @@ func (a *Accounting) newMaps() IpMap {
 
 func (a *Accounting) Run() {
 	ip6mask := net.CIDRMask(*IPv6PrefixLength, 128)
-
-	// Print the stats every Interval
-	go func() {
-		ch := time.Tick(*Interval)
-		for {
-			<-ch
-			a.Ips.Dump(os.Stdout)
-		}
-	}()
 
 	for p := range a.Output {
 		if p.IpVersion == 6 {
@@ -118,6 +136,7 @@ func (a *Accounting) Run() {
 		// This won't be a nice UTF-8 string but will preserve
 		// the bytes and can be used as a hash key
 		key := string(p.Addr)
+		a.Lock()
 		ac := a.Ips[key]
 		if p.Direction == IpSource {
 			ac.Source.Bytes += int64(p.Length)
@@ -127,9 +146,62 @@ func (a *Accounting) Run() {
 			ac.Dest.Packets += 1
 		}
 		a.Ips[key] = ac
+		a.Unlock()
 		if *Debug {
 			log.Printf("%s\n", p)
 		}
+	}
+}
+
+// Dump the current stats to a file
+//
+// We do this carefully writing to a .tmp file and renaming
+func (a *Accounting) DumpFile() {
+	fileLeaf := a.StartPeriod.Format(FileTimeFormat)
+	filePath := path.Join(*LogDirectory, fileLeaf)
+	fileTmp := filePath + ".tmp"
+	fileCsv := filePath + ".csv"
+	_, err := os.Lstat(fileCsv)
+	if err == nil {
+		log.Printf("Output file %q already exists", fileCsv)
+		return
+	}
+	log.Printf("Dumping stats to %s", fileCsv)
+	fd, err := os.Create(fileTmp)
+	if err != nil {
+		log.Printf("Failed to open stats file: %s", err)
+		return
+	}
+	Ips := a.newMaps()
+	err = Ips.Dump(fd, a.StartPeriod)
+	err2 := fd.Close()
+	if err != nil {
+		log.Printf("Failed to write to stats file: %s", err)
+		return
+	}
+	if err2 != nil {
+		log.Printf("Failed to close stats file: %s", err)
+		return
+	}
+	err = os.Rename(fileTmp, fileCsv)
+	if err != nil {
+		log.Printf("Failed to rename %q to %q: %s", fileTmp, fileCsv, err)
+		return
+	}
+	log.Printf("Stats file %q written", fileCsv)
+}
+
+// Schedules file dumping dump for the end of the interval
+func (a *Accounting) DumpStats() {
+	for {
+		now := time.Now()
+		a.StartPeriod = FlooredTime(now)
+		a.EndPeriod = a.StartPeriod.Add(*Interval)
+		if *Debug {
+			log.Printf("Next stats dump at %s", a.EndPeriod)
+		}
+		time.Sleep(a.EndPeriod.Sub(now))
+		a.DumpFile()
 	}
 }
 
@@ -148,6 +220,28 @@ func usage() {
 func main() {
 	flag.Usage = usage
 	flag.Parse()
+
+	const Day = 24 * time.Hour
+
+	// Check interval
+	if *Interval <= 0 {
+		log.Fatalf("Interval must be > 0")
+	}
+	if *Interval >= Day {
+		if (*Interval % Day) != 0 {
+			log.Fatalf("Interval %s isn't a whole number of days", *Interval)
+		}
+	} else {
+		if (Day % *Interval) != 0 {
+			log.Fatalf("Interval %s doesn't divide a day exactly", *Interval)
+		}
+	}
+
+	// Make output directory
+	err := os.MkdirAll(*LogDirectory, 0750)
+	if err != nil {
+		log.Fatalf("Failed to make log directory %q: %s", *LogDirectory, err)
+	}
 
 	if *Cpus <= 0 {
 		runtime.GOMAXPROCS(runtime.NumCPU())
@@ -199,6 +293,7 @@ func main() {
 	// Loop forever accounting stuff
 	log.Printf("Starting accounting")
 	a := NewAccounting(Output)
+	go a.DumpStats()
 	go a.Run()
 
 	// Exit on keyboard interrrupt
