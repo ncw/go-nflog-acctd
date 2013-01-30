@@ -1,14 +1,17 @@
 package main
 
 import (
+	"bufio"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"log/syslog"
 	"net"
 	"os"
 	"path"
 	"runtime"
+	"time"
 )
 
 // Globals
@@ -27,19 +30,92 @@ var (
 	LogDirectory     = flag.String("log-directory", "/var/log/accounting", "Directory to write accounting files to.")
 
 	// Globals
-	BaseName = path.Base(os.Args[0])
-	Version  = "0.1"
+	BaseName       = path.Base(os.Args[0])
+	Version        = "0.1"
+	DefaultMapSize = 1024
 )
 
-func accounting(Output chan *Packet) {
+// Information about one direction for a single IP or range
+type HalfAccount struct {
+	Bytes   int64
+	Packets int64
+}
+
+// Collect info about a single IP (or range)
+type Account struct {
+	Source HalfAccount
+	Dest   HalfAccount
+}
+
+// We store the Account directly in the map which makes for more
+// copying but less garbage
+
+// Accounting for IP addresses
+//
+// The key is the net.IP which is a []byte converted to a string so it
+// can be used as a hash key
+type IpMap map[string]Account
+
+// Dump the IpMap to the output as a CSV
+func (Ips IpMap) Dump(w io.Writer) error {
+	wb := bufio.NewWriter(w)
+	_, err := fmt.Fprintf(wb, "IP,SourceBytes,SourcePackets,DestBytes,DestPackets\n")
+	if err != nil {
+		return err
+	}
+	for key, ac := range Ips {
+		ip := net.IP(key)
+		_, err := fmt.Fprintf(wb, "%s,%d,%d,%d,%d\n", ip, ac.Source.Bytes, ac.Source.Packets, ac.Dest.Bytes, ac.Dest.Packets)
+		if err != nil {
+			return err
+		}
+	}
+	return wb.Flush()
+}
+
+// Accounting
+type Accounting struct {
+	Output chan *Packet
+	Ips    IpMap
+}
+
+func NewAccounting(Output chan *Packet) *Accounting {
+	a := &Accounting{
+		Output: Output,
+	}
+	a.newMaps()
+	return a
+}
+
+// Make a new map returning the old one
+func (a *Accounting) newMaps() IpMap {
+	OldIps := a.Ips
+	a.Ips = make(IpMap, DefaultMapSize)
+	return OldIps
+}
+
+func (a *Accounting) Run() {
 	ip6mask := net.CIDRMask(*IPv6PrefixLength, 128)
-	for p := range Output {
+	for p := range a.Output {
 		if p.IpVersion == 6 {
 			p.Addr = p.Addr.Mask(ip6mask)
-			log.Printf(">> %s\n", p)
 		}
+		// Convert the net.IP which is a []byte into a string
+		// This won't be a nice UTF-8 string but will preserve
+		// the bytes and can be used as a hash key
+		key := string(p.Addr)
+		ac := a.Ips[key]
+		if p.Direction == IpSource {
+			ac.Source.Bytes += int64(p.Length)
+			ac.Source.Packets += 1
+		} else {
+			ac.Dest.Bytes += int64(p.Length)
+			ac.Dest.Packets += 1
+		}
+		a.Ips[key] = ac
 		if *Debug {
 			log.Printf("%s\n", p)
+			a.Ips.Dump(os.Stdout)
 		}
 	}
 }
@@ -98,6 +174,6 @@ func main() {
 
 	// Loop forever accounting stuff
 	log.Printf("Starting accounting")
-	accounting(Output)
-
+	a := NewAccounting(Output)
+	a.Run()
 }
