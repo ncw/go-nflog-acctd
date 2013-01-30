@@ -65,6 +65,8 @@ type NfLog struct {
 	IpPacket *IpPacketInfo
 	// Channel we are sending into
 	Output chan *Packet
+	// Quit the loop
+	quit bool
 }
 
 // Create a new NfLog
@@ -167,10 +169,10 @@ func (nflog *NfLog) makeGroup(group, size int) {
 	nflog.ghs = append(nflog.ghs, gh)
 }
 
-// Receive packets in a loop forever
+// Receive packets in a loop until quit
 func (nflog *NfLog) Loop() {
 	buf := make([]byte, syscall.Getpagesize())
-	for {
+	for !nflog.quit {
 		nr, _, e := syscall.Recvfrom(nflog.fd, buf, 0)
 		if e != nil {
 			log.Printf("Recvfrom failed: %s", e)
@@ -184,6 +186,7 @@ func (nflog *NfLog) Loop() {
 // Close the NfLog down
 func (nflog *NfLog) Close() {
 	log.Printf("Unbinding this socket from %d groups", len(nflog.ghs))
+	nflog.quit = true
 	for _, gh := range nflog.ghs {
 		C.nflog_unbind_group(gh)
 	}
