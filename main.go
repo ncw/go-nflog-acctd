@@ -67,9 +67,6 @@ type IpStats struct {
 	Dest   HalfIpStats
 }
 
-// We store the IpStats directly in the map which makes for more
-// copying but less garbage
-
 // Accounting for IP addresses
 //
 // The key is the net.IP which is a []byte converted to a string so it
