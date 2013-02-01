@@ -56,25 +56,25 @@ var (
 )
 
 // Information about one direction for a single IP or range
-type HalfAccount struct {
+type HalfIpStats struct {
 	Bytes   int64
 	Packets int64
 }
 
 // Collect info about a single IP (or range)
-type Account struct {
-	Source HalfAccount
-	Dest   HalfAccount
+type IpStats struct {
+	Source HalfIpStats
+	Dest   HalfIpStats
 }
 
-// We store the Account directly in the map which makes for more
+// We store the IpStats directly in the map which makes for more
 // copying but less garbage
 
 // Accounting for IP addresses
 //
 // The key is the net.IP which is a []byte converted to a string so it
 // can be used as a hash key
-type IpMap map[string]*Account
+type IpMap map[string]*IpStats
 
 // Dump the IpMap to the output as a CSV
 func (Ips IpMap) Dump(w io.Writer, when time.Time) error {
@@ -84,9 +84,9 @@ func (Ips IpMap) Dump(w io.Writer, when time.Time) error {
 	if err != nil {
 		return err
 	}
-	for key, ac := range Ips {
+	for key, stat := range Ips {
 		ip := net.IP(key)
-		_, err := fmt.Fprintf(wb, "%s,%s,%d,%d,%d,%d\n", whenString, ip, ac.Source.Bytes, ac.Source.Packets, ac.Dest.Bytes, ac.Dest.Packets)
+		_, err := fmt.Fprintf(wb, "%s,%s,%d,%d,%d,%d\n", whenString, ip, stat.Source.Bytes, stat.Source.Packets, stat.Dest.Bytes, stat.Dest.Packets)
 		if err != nil {
 			return err
 		}
@@ -160,17 +160,17 @@ func (a *Accounting) Packet(Direction IpDirection, Addr net.IP, Length int, IpVe
 	// This won't be a nice UTF-8 string but will preserve
 	// the bytes and can be used as a hash key
 	key := string(Addr)
-	ac := a.Ips[key]
-	if ac == nil {
-		ac = &Account{}
-		a.Ips[key] = ac
+	stat := a.Ips[key]
+	if stat == nil {
+		stat = &IpStats{}
+		a.Ips[key] = stat
 	}
 	if Direction == IpSource {
-		ac.Source.Bytes += int64(Length)
-		ac.Source.Packets += 1
+		stat.Source.Bytes += int64(Length)
+		stat.Source.Packets += 1
 	} else {
-		ac.Dest.Bytes += int64(Length)
-		ac.Dest.Packets += 1
+		stat.Dest.Bytes += int64(Length)
+		stat.Dest.Packets += 1
 	}
 	if *Debug {
 		log.Printf("IPv%d message %s Addr %s Size %d", IpVersion, Direction, Addr, Length)
