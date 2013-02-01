@@ -59,7 +59,7 @@ type NfLog struct {
 	// Main nflog_handle
 	h *C.struct_nflog_handle
 	// File descriptor for socket operations
-	fd int
+	fd C.int
 	// Group handle
 	gh *C.struct_nflog_g_handle
 	// The multicast address
@@ -90,18 +90,18 @@ type NfLog struct {
 func NewNfLog(McastGroup int, IpVersion byte, Direction IpDirection, a *Accounting) *NfLog {
 	h := C.nflog_open()
 	if h == nil {
-		log.Fatalf("Failed to open NFLOG: %s", nflog_error())
+		log.Fatalf("Failed to open NFLOG: %s", strerror())
 	}
 	if *Debug {
 		log.Println("Binding nfnetlink_log to AF_INET")
 	}
 	if C.nflog_bind_pf(h, C.AF_INET) < 0 {
-		log.Fatalf("nflog_bind_pf failed: %s", nflog_error())
+		log.Fatalf("nflog_bind_pf failed: %s", strerror())
 	}
 
 	nflog := &NfLog{
 		h:          h,
-		fd:         int(C.nflog_fd(h)),
+		fd:         C.nflog_fd(h),
 		McastGroup: McastGroup,
 		IpVersion:  IpVersion,
 		Direction:  Direction,
@@ -178,7 +178,7 @@ func goCallback(_nflog unsafe.Pointer, seq uint32, payload_len C.int, payload un
 }
 
 // Current nflog error
-func nflog_error() error {
+func strerror() error {
 	return syscall.Errno(C.nflog_errno)
 }
 
@@ -189,36 +189,36 @@ func (nflog *NfLog) makeGroup(group, size int) {
 	}
 	gh := C.nflog_bind_group(nflog.h, (C.u_int16_t)(group))
 	if gh == nil {
-		log.Fatalf("nflog_bind_group failed: %s", nflog_error())
+		log.Fatalf("nflog_bind_group failed: %s", strerror())
 	}
 	nflog.gh = gh
 
 	// Set the maximum amount of logs in buffer for this group
 	if C.nflog_set_qthresh(gh, MaxQueueLogs) < 0 {
-		log.Fatalf("nflog_set_qthresh failed: %s", nflog_error())
+		log.Fatalf("nflog_set_qthresh failed: %s", strerror())
 	}
 
 	// Set local sequence numbering to detect missing packets
 	if C.nflog_set_flags(gh, C.NFULNL_CFG_F_SEQ) < 0 {
-		log.Fatalf("nflog_set_flags failed: %s", nflog_error())
+		log.Fatalf("nflog_set_flags failed: %s", strerror())
 	}
 
 	// Set buffer size large
 	if C.nflog_set_nlbufsiz(gh, NflogBufferSize) < 0 {
-		log.Fatalf("nflog_set_nlbufsiz: %s", nflog_error())
+		log.Fatalf("nflog_set_nlbufsiz: %s", strerror())
 	}
 
 	// Set timeout
 	// Doesn't seem to make any difference and don't know the unit
 	// if C.nflog_set_timeout(gh, NflogTimeout) < 0 {
-	// 	log.Fatalf("nflog_set_timeout: %s", nflog_error())
+	// 	log.Fatalf("nflog_set_timeout: %s", strerror())
 	// }
 
 	if *Debug {
 		log.Printf("Setting copy_packet mode to %d bytes", size)
 	}
 	if C.nflog_set_mode(gh, C.NFULNL_COPY_PACKET, (C.uint)(size)) < 0 {
-		log.Fatalf("nflog_set_mode failed: %s", nflog_error())
+		log.Fatalf("nflog_set_mode failed: %s", strerror())
 	}
 
 	// Register the callback now we are set up
@@ -228,16 +228,18 @@ func (nflog *NfLog) makeGroup(group, size int) {
 // Receive packets in a loop until quit
 func (nflog *NfLog) Loop() {
 	buf := make([]byte, RecvBufferSize)
+	pbuf := unsafe.Pointer(&buf[0])
+	buflen := C.size_t(len(buf))
 	for !nflog.quit {
-		nr, _, e := syscall.Recvfrom(nflog.fd, buf, 0)
-		if e != nil {
-			log.Printf("Recvfrom failed: %s", e)
+		nr := C.recv(nflog.fd, pbuf, buflen, 0)
+		if nr < 0 {
+			log.Printf("Recvfrom failed: %s", strerror())
 			nflog.errors++
 		} else {
 			// Handle messages in packet reusing memory
 			ps := <-nflog.a.returnAddPackets
 			nflog.addPackets = ps[:0]
-			C.nflog_handle_packet(nflog.h, (*C.char)(unsafe.Pointer(&buf[0])), (C.int)(nr))
+			C.nflog_handle_packet(nflog.h, (*C.char)(pbuf), (C.int)(nr))
 			nflog.a.processAddPackets <- nflog.addPackets
 			nflog.addPackets = nil
 		}
@@ -252,12 +254,12 @@ func (nflog *NfLog) Close() {
 	}
 	nflog.quit = true
 	if C.nflog_unbind_group(nflog.gh) < 0 {
-		log.Printf("nflog_unbind_group(%d) failed: %s", nflog.McastGroup, nflog_error())
+		log.Printf("nflog_unbind_group(%d) failed: %s", nflog.McastGroup, strerror())
 	}
 	if *Debug {
 		log.Printf("Closing nflog")
 	}
 	if C.nflog_close(nflog.h) < 0 {
-		log.Printf("nflog_close failed: %s", nflog_error())
+		log.Printf("nflog_close failed: %s", strerror())
 	}
 }
