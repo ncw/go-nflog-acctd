@@ -100,11 +100,14 @@ func FlooredTime(t time.Time) time.Time {
 }
 
 // AddPacket holds the info about one packet
+//
+// Addr is a net.IP which is a []byte converted into a string This
+// won't be a nice UTF-8 string but will preserve the bytes and can be
+// used as a hash key
 type AddPacket struct {
 	Direction IpDirection
-	Addr      net.IP
+	Addr      string
 	Length    int
-	IpVersion byte
 }
 
 // Accounting
@@ -146,21 +149,12 @@ func (a *Accounting) newMaps() IpMap {
 	return <-a.oldIps
 }
 
-var ip6mask = net.CIDRMask(*IPv6PrefixLength, 128)
-
 // Account a single packet in a thread safe way
-func (a *Accounting) Packet(Direction IpDirection, Addr net.IP, Length int, IpVersion byte) {
-	if IpVersion == 6 {
-		Addr = Addr.Mask(ip6mask)
-	}
-	// Convert the net.IP which is a []byte into a string
-	// This won't be a nice UTF-8 string but will preserve
-	// the bytes and can be used as a hash key
-	key := string(Addr)
-	stat := a.Ips[key]
+func (a *Accounting) Packet(Direction IpDirection, Addr string, Length int) {
+	stat := a.Ips[Addr]
 	if stat == nil {
 		stat = &IpStats{}
-		a.Ips[key] = stat
+		a.Ips[Addr] = stat
 	}
 	if Direction == IpSource {
 		stat.Source.Bytes += int64(Length)
@@ -170,7 +164,7 @@ func (a *Accounting) Packet(Direction IpDirection, Addr net.IP, Length int, IpVe
 		stat.Dest.Packets += 1
 	}
 	if *Debug {
-		log.Printf("IPv%d message %s Addr %s Size %d", IpVersion, Direction, Addr, Length)
+		log.Printf("IPv%d message %s Addr %s Size %d", IpVersion, Direction, net.IP(Addr), Length)
 	}
 }
 
@@ -185,7 +179,7 @@ func (a *Accounting) Engine() {
 		// Process a bunch of packets
 		case ps := <-a.processAddPackets:
 			for _, p := range ps {
-				a.Packet(p.Direction, p.Addr, p.Length, p.IpVersion)
+				a.Packet(p.Direction, p.Addr, p.Length)
 			}
 			a.returnAddPackets <- ps
 

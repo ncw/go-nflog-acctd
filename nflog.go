@@ -14,6 +14,7 @@ package main
 import (
 	"log"
 	"net"
+	"reflect"
 	"syscall"
 	"unsafe"
 )
@@ -120,12 +121,22 @@ func NewNfLog(McastGroup int, IpVersion byte, Direction IpDirection, a *Accounti
 	return nflog
 }
 
+var ip6mask = net.CIDRMask(*IPv6PrefixLength, 128)
+
 // Receive data from nflog on a callback from C
 //
 //export goCallback
 func goCallback(_nflog unsafe.Pointer, seq uint32, payload_len C.int, payload unsafe.Pointer) {
 	nflog := (*NfLog)(_nflog)
-	packet := C.GoBytes(payload, payload_len)
+
+	// Get the packet into a []byte
+	// NB if the C data goes away then BAD things will happen!
+	// So don't keep slices from this after returning from this function
+	var packet []byte
+	sliceHeader := (*reflect.SliceHeader)((unsafe.Pointer(&packet)))
+	sliceHeader.Cap = int(payload_len)
+	sliceHeader.Len = int(payload_len)
+	sliceHeader.Data = uintptr(payload)
 
 	// Peek the IP Version out of the header
 	ip_version := packet[IpVersion] >> IpVersionShift & IpVersionMask
@@ -153,8 +164,17 @@ func goCallback(_nflog unsafe.Pointer, seq uint32, payload_len C.int, payload un
 	} else {
 		addr = i.Dst(packet)
 	}
-	//nflog.a.Packet(nflog.Direction, addr, i.Length(packet), ip_version)
-	nflog.addPackets = append(nflog.addPackets, AddPacket{Direction: nflog.Direction, Addr: addr, Length: i.Length(packet), IpVersion: ip_version})
+
+	// Mask the address
+	if ip_version == 6 {
+		addr = addr.Mask(ip6mask)
+	}
+
+	nflog.addPackets = append(nflog.addPackets, AddPacket{
+		Direction: nflog.Direction,
+		Addr:      string(addr),
+		Length:    i.Length(packet),
+	})
 }
 
 // Current nflog error
