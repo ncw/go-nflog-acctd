@@ -1,10 +1,13 @@
 // Use cgo to interface with nflog
 //
+// Docs: http://www.netfilter.org/projects/libnetfilter_log/doxygen/index.html
+//
 // Debian packages needed:
 //   apt-get install iptables-dev linux-libc-dev libnetfilter-log-dev
 
-// FIXME why the whole packet arriving and not just the headers?
-// FIXME what does copy packet do?
+// FIXME Get this under heavy load - ENOBUFS
+// 2013/01/31 17:38:21 Recvfrom failed: no buffer space available
+// Seems to be caused by buffer overflow
 
 package main
 
@@ -24,16 +27,15 @@ import (
 #include <libnetfilter_log/libnetfilter_log.h>
 
 // Forward definition of Go function
-void goCallback(void *, char *, int, void *);
+void goCallback(void *, u_int32_t, int, void *);
 
 // Callback to hand the data back to Go
 static int _callback(struct nflog_g_handle *gh, struct nfgenmsg *nfmsg, struct nflog_data *nfd, void *data) {
-	char *prefix = nflog_get_prefix(nfd);
 	char *payload = 0;
 	int payload_len = nflog_get_payload(nfd, &payload);
-	// Could read timestamp nflog_get_timestamp(nfd, &tv)
-	// Could read devices: nflog_get_indev(nfd) and nflog_get_outdev(nfd)
-	goCallback(data, prefix, payload_len, payload);
+	u_int32_t seq = 0;
+	nflog_get_seq(nfd, &seq);
+	goCallback(data, seq, payload_len, payload);
 	return 0;
  }
 
@@ -45,7 +47,8 @@ static int _callback_register(struct nflog_g_handle *gh, void *data) {
 import "C"
 
 const (
-	MAX_CAPLEN = 4096
+	RecvBufferSize = 64 * 1024
+	MaxQueueLogs   = 1024
 )
 
 // NfLog
@@ -58,6 +61,10 @@ type NfLog struct {
 	ghs []*C.struct_nflog_g_handle
 	// The multicast address
 	McastGroup int
+	// The next expected sequence number
+	seq uint32
+	// Errors
+	errors int64
 	// Flavour of IP we are expecting, 4 or 6
 	IpVersion byte
 	// Are we account the source or the destination address
@@ -80,7 +87,9 @@ func NewNfLog(McastGroup int, IpVersion byte, Direction IpDirection, a *Accounti
 	if h == nil {
 		log.Fatalf("Failed to open NFLOG: %s", nflog_error())
 	}
-	log.Println("Binding nfnetlink_log to AF_INET")
+	if *Debug {
+		log.Println("Binding nfnetlink_log to AF_INET")
+	}
 	if C.nflog_bind_pf(h, C.AF_INET) < 0 {
 		log.Fatalf("nflog_bind_pf failed: %s", nflog_error())
 	}
@@ -108,19 +117,26 @@ func NewNfLog(McastGroup int, IpVersion byte, Direction IpDirection, a *Accounti
 // Receive data from nflog on a callback from C
 //
 //export goCallback
-func goCallback(_nflog unsafe.Pointer, cprefix *C.char, payload_len C.int, payload unsafe.Pointer) {
+func goCallback(_nflog unsafe.Pointer, seq uint32, payload_len C.int, payload unsafe.Pointer) {
 	nflog := (*NfLog)(_nflog)
-	//prefix := C.GoString(cprefix)
 	packet := C.GoBytes(payload, payload_len)
+
 	// Peek the IP Version out of the header
 	ip_version := packet[IpVersion] >> IpVersionShift & IpVersionMask
-	// log.Printf("Received %s: size %d, IPv%d", prefix, payload_len, ip_version)
+	// log.Printf("Received %d: size %d, IPv%d", seq, payload_len, ip_version)
+	if seq != nflog.seq {
+		nflog.errors++
+		log.Printf("%d missing packets dectected", seq-nflog.seq)
+	}
+	nflog.seq = seq + 1
 	if ip_version != nflog.IpVersion {
+		nflog.errors++
 		log.Printf("Bad IP version: %d", ip_version)
 		return
 	}
 	i := nflog.IpPacket
 	if len(packet) < i.HeaderSize {
+		nflog.errors++
 		log.Printf("Short IPv%s packet %d/%d bytes", ip_version, len(packet), i.HeaderSize)
 		return
 	}
@@ -141,23 +157,31 @@ func nflog_error() error {
 
 // Connects to the group specified with the size
 func (nflog *NfLog) makeGroup(group, size int) {
-	log.Printf("Binding this socket to group %d", group)
+	if *Debug {
+		log.Printf("Binding this socket to group %d", group)
+	}
 	gh := C.nflog_bind_group(nflog.h, (C.u_int16_t)(group))
 	if gh == nil {
 		log.Fatalf("nflog_bind_group failed: %s", nflog_error())
 	}
 
-	//C.nflog_callback_register(gh, nflog_callback, nil)
 	C._callback_register(gh, unsafe.Pointer(nflog))
 
 	// FIXME set nflog_set_timeout?
 
-	// FIXME do we need this? Should set large
-	if C.nflog_set_qthresh(gh, 1024) < 0 {
+	// Set the maximum amount of logs in buffer for this group
+	if C.nflog_set_qthresh(gh, MaxQueueLogs) < 0 {
 		log.Fatalf("nflog_set_qthresh failed: %s", nflog_error())
 	}
 
-	log.Printf("Setting copy_packet mode to %d bytes", size)
+	// Set local sequence numbering to detect missing packets
+	if C.nflog_set_flags(gh, C.NFULNL_CFG_F_SEQ) < 0 {
+		log.Fatalf("nflog_set_flags failed: %s", nflog_error())
+	}
+
+	if *Debug {
+		log.Printf("Setting copy_packet mode to %d bytes", size)
+	}
 	if C.nflog_set_mode(gh, C.NFULNL_COPY_PACKET, (C.uint)(size)) < 0 {
 		log.Fatalf("nflog_set_mode failed: %s", nflog_error())
 	}
@@ -167,25 +191,31 @@ func (nflog *NfLog) makeGroup(group, size int) {
 
 // Receive packets in a loop until quit
 func (nflog *NfLog) Loop() {
-	buf := make([]byte, syscall.Getpagesize())
+	buf := make([]byte, RecvBufferSize)
 	for !nflog.quit {
 		nr, _, e := syscall.Recvfrom(nflog.fd, buf, 0)
 		if e != nil {
 			log.Printf("Recvfrom failed: %s", e)
+			nflog.errors++
+		} else {
+			// Handle messages in packet
+			C.nflog_handle_packet(nflog.h, (*C.char)(unsafe.Pointer(&buf[0])), (C.int)(nr))
 		}
-		// Handle messages in packet
-		C.nflog_handle_packet(nflog.h, (*C.char)(unsafe.Pointer(&buf[0])), (C.int)(nr))
 	}
 
 }
 
 // Close the NfLog down
 func (nflog *NfLog) Close() {
-	log.Printf("Unbinding this socket from %d groups", len(nflog.ghs))
+	if *Debug {
+		log.Printf("Unbinding this socket from %d groups", len(nflog.ghs))
+	}
 	nflog.quit = true
 	for _, gh := range nflog.ghs {
 		C.nflog_unbind_group(gh)
 	}
-	log.Printf("Closing NFLOG")
+	if *Debug {
+		log.Printf("Closing NFLOG")
+	}
 	C.nflog_close(nflog.h)
 }
