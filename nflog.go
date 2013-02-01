@@ -14,7 +14,6 @@ package main
 import (
 	"log"
 	"net"
-	"sync"
 	"syscall"
 	"unsafe"
 )
@@ -60,8 +59,8 @@ type NfLog struct {
 	h *C.struct_nflog_handle
 	// File descriptor for socket operations
 	fd int
-	// Group handles
-	ghs []*C.struct_nflog_g_handle
+	// Group handle
+	gh *C.struct_nflog_g_handle
 	// The multicast address
 	McastGroup int
 	// The next expected sequence number
@@ -80,8 +79,6 @@ type NfLog struct {
 	quit bool
 	// Buffer for accumulated packets
 	addPackets []AddPacket
-	// Wait for stuff to finish
-	stopWg sync.WaitGroup
 }
 
 // Create a new NfLog
@@ -119,7 +116,6 @@ func NewNfLog(McastGroup int, IpVersion byte, Direction IpDirection, a *Accounti
 	}
 	nflog.makeGroup(McastGroup, nflog.IpPacket.HeaderSize)
 	// Start the background process
-	a.stopWg.Add(1)
 	go nflog.Loop()
 	return nflog
 }
@@ -175,6 +171,7 @@ func (nflog *NfLog) makeGroup(group, size int) {
 	if gh == nil {
 		log.Fatalf("nflog_bind_group failed: %s", nflog_error())
 	}
+	nflog.gh = gh
 
 	// Set the maximum amount of logs in buffer for this group
 	if C.nflog_set_qthresh(gh, MaxQueueLogs) < 0 {
@@ -206,12 +203,10 @@ func (nflog *NfLog) makeGroup(group, size int) {
 
 	// Register the callback now we are set up
 	C._callback_register(gh, unsafe.Pointer(nflog))
-	nflog.ghs = append(nflog.ghs, gh)
 }
 
 // Receive packets in a loop until quit
 func (nflog *NfLog) Loop() {
-	defer nflog.stopWg.Done()
 	buf := make([]byte, RecvBufferSize)
 	for !nflog.quit {
 		nr, _, e := syscall.Recvfrom(nflog.fd, buf, 0)
@@ -233,16 +228,16 @@ func (nflog *NfLog) Loop() {
 // Close the NfLog down
 func (nflog *NfLog) Close() {
 	if *Debug {
-		log.Printf("Unbinding this socket from %d groups", len(nflog.ghs))
+		log.Printf("Unbinding this socket (%d) from group %d", nflog.fd, nflog.McastGroup)
 	}
 	nflog.quit = true
-	for _, gh := range nflog.ghs {
-		C.nflog_unbind_group(gh)
+	if C.nflog_unbind_group(nflog.gh) < 0 {
+		log.Printf("nflog_unbind_group(%d) failed: %s", nflog.McastGroup, nflog_error())
 	}
 	if *Debug {
-		log.Printf("Closing NFLOG")
+		log.Printf("Closing nflog")
 	}
-	C.nflog_close(nflog.h)
-	log.Printf("Waiting for loop to die")
-	nflog.stopWg.Wait()
+	if C.nflog_close(nflog.h) < 0 {
+		log.Printf("nflog_close failed: %s", nflog_error())
+	}
 }

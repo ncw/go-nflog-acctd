@@ -199,6 +199,9 @@ func (a *Accounting) Engine() {
 
 		// Stop the engine
 		case <-a.stop:
+			if *Debug {
+				log.Printf("Engine stop")
+			}
 			return
 		}
 	}
@@ -254,6 +257,9 @@ func (a *Accounting) DumpStats() {
 		select {
 		case <-time.After(a.EndPeriod.Sub(time.Now())):
 		case <-a.stop:
+			if *Debug {
+				log.Printf("DumpStats stop")
+			}
 			return
 		}
 		a.DumpFile()
@@ -278,6 +284,9 @@ func (a *Accounting) Stop() {
 	a.DumpFile()
 	a.stop <- true
 	a.stop <- true
+	if *Debug {
+		log.Printf("Wait for stop")
+	}
 	a.stopWg.Wait()
 	log.Printf("Stopped accounting")
 }
