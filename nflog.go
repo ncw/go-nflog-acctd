@@ -47,8 +47,10 @@ static int _callback_register(struct nflog_g_handle *gh, void *data) {
 import "C"
 
 const (
-	RecvBufferSize = 64 * 1024
-	MaxQueueLogs   = 1024
+	RecvBufferSize  = 4 * 1024 * 1024
+	NflogBufferSize = 4 * 1024 * 1024
+	MaxQueueLogs    = 1024 * 1024
+	// NflogTimeout   = 1024 // what unit?
 )
 
 // NfLog
@@ -124,9 +126,9 @@ func goCallback(_nflog unsafe.Pointer, seq uint32, payload_len C.int, payload un
 	// Peek the IP Version out of the header
 	ip_version := packet[IpVersion] >> IpVersionShift & IpVersionMask
 	// log.Printf("Received %d: size %d, IPv%d", seq, payload_len, ip_version)
-	if seq != nflog.seq {
+	if seq != 0 && seq != nflog.seq {
 		nflog.errors++
-		log.Printf("%d missing packets dectected", seq-nflog.seq)
+		log.Printf("%d missing packets detected, %d to %d", seq-nflog.seq, seq, nflog.seq)
 	}
 	nflog.seq = seq + 1
 	if ip_version != nflog.IpVersion {
@@ -165,10 +167,6 @@ func (nflog *NfLog) makeGroup(group, size int) {
 		log.Fatalf("nflog_bind_group failed: %s", nflog_error())
 	}
 
-	C._callback_register(gh, unsafe.Pointer(nflog))
-
-	// FIXME set nflog_set_timeout?
-
 	// Set the maximum amount of logs in buffer for this group
 	if C.nflog_set_qthresh(gh, MaxQueueLogs) < 0 {
 		log.Fatalf("nflog_set_qthresh failed: %s", nflog_error())
@@ -179,6 +177,17 @@ func (nflog *NfLog) makeGroup(group, size int) {
 		log.Fatalf("nflog_set_flags failed: %s", nflog_error())
 	}
 
+	// Set buffer size large
+	if C.nflog_set_nlbufsiz(gh, NflogBufferSize) < 0 {
+		log.Fatalf("nflog_set_nlbufsiz: %s", nflog_error())
+	}
+
+	// Set timeout
+	// Doesn't seem to make any difference and don't know the unit
+	// if C.nflog_set_timeout(gh, NflogTimeout) < 0 {
+	// 	log.Fatalf("nflog_set_timeout: %s", nflog_error())
+	// }
+
 	if *Debug {
 		log.Printf("Setting copy_packet mode to %d bytes", size)
 	}
@@ -186,6 +195,8 @@ func (nflog *NfLog) makeGroup(group, size int) {
 		log.Fatalf("nflog_set_mode failed: %s", nflog_error())
 	}
 
+	// Register the callback now we are set up
+	C._callback_register(gh, unsafe.Pointer(nflog))
 	nflog.ghs = append(nflog.ghs, gh)
 }
 
