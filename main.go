@@ -4,6 +4,8 @@ package main
 
 // FIXME detect overflows?
 
+// FIXME write dt in the file?
+
 import (
 	"bufio"
 	"flag"
@@ -27,7 +29,7 @@ const (
 	// http://stackoverflow.com/questions/804118/best-timestamp-format-for-csv-excel
 	CsvTimeFormat = "2006-01-02 15:04:05"
 	// Format to use when making filenames
-	FileTimeFormat = "2006-01-02-15-04-05"
+	FileTimeFormat = "2006-01-02-150405"
 )
 
 // Globals
@@ -101,14 +103,17 @@ func FlooredTime(t time.Time) time.Time {
 // Accounting
 type Accounting struct {
 	sync.Mutex
-	StartPeriod time.Time
-	EndPeriod   time.Time
-	Ips         IpMap
+	StartPeriod    time.Time
+	EndPeriod      time.Time
+	Ips            IpMap
+	stopWg         sync.WaitGroup
+	stopAccounting chan bool
 }
 
 func NewAccounting() *Accounting {
 	a := &Accounting{}
 	a.newMaps()
+	a.stopAccounting = make(chan bool, 1)
 	return a
 }
 
@@ -155,7 +160,7 @@ func (a *Accounting) Packet(Direction IpDirection, Addr net.IP, Length int, IpVe
 //
 // We do this carefully writing to a .tmp file and renaming
 func (a *Accounting) DumpFile() {
-	fileLeaf := a.StartPeriod.Format(FileTimeFormat)
+	fileLeaf := a.StartPeriod.Format(FileTimeFormat) + "_" + a.EndPeriod.Format(FileTimeFormat)
 	filePath := path.Join(*LogDirectory, fileLeaf)
 	fileTmp := filePath + ".tmp"
 	fileCsv := filePath + ".csv"
@@ -191,16 +196,40 @@ func (a *Accounting) DumpFile() {
 
 // Schedules file dumping dump for the end of the interval
 func (a *Accounting) DumpStats() {
+	defer a.stopWg.Done()
+	a.StartPeriod = time.Now()
+	a.EndPeriod = FlooredTime(a.StartPeriod).Add(*Interval)
 	for {
-		now := time.Now()
-		a.StartPeriod = FlooredTime(now)
-		a.EndPeriod = a.StartPeriod.Add(*Interval)
 		if *Debug {
 			log.Printf("Next stats dump at %s", a.EndPeriod)
 		}
-		time.Sleep(a.EndPeriod.Sub(now))
+		select {
+		case <-time.After(a.EndPeriod.Sub(time.Now())):
+		case <-a.stopAccounting:
+			return
+		}
 		a.DumpFile()
+		a.StartPeriod = a.EndPeriod
+		a.EndPeriod = a.StartPeriod.Add(*Interval)
 	}
+}
+
+// Starts the accounting
+func (a *Accounting) Start() {
+	log.Printf("Starting accounting")
+	a.stopWg.Add(1)
+	go a.DumpStats()
+	log.Printf("Started accounting")
+}
+
+// Stops the accounting saving the stats so far
+func (a *Accounting) Stop() {
+	log.Printf("Stopping accounting")
+	a.stopAccounting <- true
+	a.stopWg.Wait()
+	a.EndPeriod = time.Now()
+	a.DumpFile()
+	log.Printf("Stopped accounting")
 }
 
 // usage prints the syntax
@@ -289,16 +318,16 @@ func main() {
 	}
 
 	// Loop forever accounting stuff
-	log.Printf("Starting accounting")
-	go a.DumpStats()
+	a.Start()
 
-	// Exit on keyboard interrrupt
+	// Exit neatly on interrupt
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, syscall.SIGINT)
 	signal.Notify(ch, syscall.SIGTERM)
 	signal.Notify(ch, syscall.SIGQUIT)
 	s := <-ch
 	log.Printf("%s received - shutting down", s)
+	a.Stop()
 	for _, nflog := range nflogs {
 		nflog.Close()
 	}
