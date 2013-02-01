@@ -6,6 +6,8 @@ package main
 
 // FIXME write dt in the file?
 
+// FIXME don't dump stats file if empty?
+
 import (
 	"bufio"
 	"flag"
@@ -100,30 +102,51 @@ func FlooredTime(t time.Time) time.Time {
 	return time.Unix(0, ns)
 }
 
+// AddPacket holds the info about one packet
+type AddPacket struct {
+	Direction IpDirection
+	Addr      net.IP
+	Length    int
+	IpVersion byte
+}
+
 // Accounting
 type Accounting struct {
-	sync.Mutex
-	StartPeriod    time.Time
-	EndPeriod      time.Time
-	Ips            IpMap
-	stopWg         sync.WaitGroup
-	stopAccounting chan bool
+	StartPeriod       time.Time
+	EndPeriod         time.Time
+	Ips               IpMap
+	stopWg            sync.WaitGroup
+	stop              chan bool
+	processAddPackets chan []AddPacket
+	returnAddPackets  chan []AddPacket
+	flip              chan bool
+	oldIps            chan IpMap
 }
 
 func NewAccounting() *Accounting {
-	a := &Accounting{}
-	a.newMaps()
-	a.stopAccounting = make(chan bool, 1)
+	const AddPacketsQueueSize = 8
+
+	a := &Accounting{
+		Ips:               make(IpMap, DefaultMapSize),
+		stop:              make(chan bool, 2),
+		processAddPackets: make(chan []AddPacket, AddPacketsQueueSize),
+		returnAddPackets:  make(chan []AddPacket, AddPacketsQueueSize),
+		flip:              make(chan bool, 1),
+		oldIps:            make(chan IpMap, 1),
+	}
+
+	// Make some buffers
+	for i := 0; i < AddPacketsQueueSize; i++ {
+		a.returnAddPackets <- make([]AddPacket, 0, 128)
+	}
+
 	return a
 }
 
 // Make a new map returning the old one while holding the lock
 func (a *Accounting) newMaps() IpMap {
-	a.Lock()
-	defer a.Unlock()
-	OldIps := a.Ips
-	a.Ips = make(IpMap, DefaultMapSize)
-	return OldIps
+	a.flip <- true
+	return <-a.oldIps
 }
 
 var ip6mask = net.CIDRMask(*IPv6PrefixLength, 128)
@@ -137,7 +160,6 @@ func (a *Accounting) Packet(Direction IpDirection, Addr net.IP, Length int, IpVe
 	// This won't be a nice UTF-8 string but will preserve
 	// the bytes and can be used as a hash key
 	key := string(Addr)
-	a.Lock()
 	ac := a.Ips[key]
 	if ac == nil {
 		ac = &Account{}
@@ -150,9 +172,35 @@ func (a *Accounting) Packet(Direction IpDirection, Addr net.IP, Length int, IpVe
 		ac.Dest.Bytes += int64(Length)
 		ac.Dest.Packets += 1
 	}
-	a.Unlock()
 	if *Debug {
 		log.Printf("IPv%d message %s Addr %s Size %d", IpVersion, Direction, Addr, Length)
+	}
+}
+
+// Accounting engine to account packets
+//
+// It has sole control over the Ips map which means that no locking is
+// required
+func (a *Accounting) Engine() {
+	defer a.stopWg.Done()
+	for {
+		select {
+		// Process a bunch of packets
+		case ps := <-a.processAddPackets:
+			for _, p := range ps {
+				a.Packet(p.Direction, p.Addr, p.Length, p.IpVersion)
+			}
+			a.returnAddPackets <- ps
+
+		// Flip the map
+		case <-a.flip:
+			a.oldIps <- a.Ips
+			a.Ips = make(IpMap, DefaultMapSize)
+
+		// Stop the engine
+		case <-a.stop:
+			return
+		}
 	}
 }
 
@@ -205,7 +253,7 @@ func (a *Accounting) DumpStats() {
 		}
 		select {
 		case <-time.After(a.EndPeriod.Sub(time.Now())):
-		case <-a.stopAccounting:
+		case <-a.stop:
 			return
 		}
 		a.DumpFile()
@@ -217,18 +265,20 @@ func (a *Accounting) DumpStats() {
 // Starts the accounting
 func (a *Accounting) Start() {
 	log.Printf("Starting accounting")
-	a.stopWg.Add(1)
+	a.stopWg.Add(2)
 	go a.DumpStats()
+	go a.Engine()
 	log.Printf("Started accounting")
 }
 
 // Stops the accounting saving the stats so far
 func (a *Accounting) Stop() {
 	log.Printf("Stopping accounting")
-	a.stopAccounting <- true
-	a.stopWg.Wait()
 	a.EndPeriod = time.Now()
 	a.DumpFile()
+	a.stop <- true
+	a.stop <- true
+	a.stopWg.Wait()
 	log.Printf("Stopped accounting")
 }
 
@@ -304,7 +354,6 @@ func main() {
 			log.Printf("Monitoring NFLog multicast group %d for IPv%d %s", Group, IpVersion, Direction)
 			nflog := NewNfLog(Group, IpVersion, Direction, a)
 			nflogs = append(nflogs, nflog)
-			go nflog.Loop()
 		}
 	}
 

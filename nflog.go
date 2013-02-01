@@ -14,6 +14,7 @@ package main
 import (
 	"log"
 	"net"
+	"sync"
 	"syscall"
 	"unsafe"
 )
@@ -77,6 +78,10 @@ type NfLog struct {
 	a *Accounting
 	// Quit the loop
 	quit bool
+	// Buffer for accumulated packets
+	addPackets []AddPacket
+	// Wait for stuff to finish
+	stopWg sync.WaitGroup
 }
 
 // Create a new NfLog
@@ -113,6 +118,9 @@ func NewNfLog(McastGroup int, IpVersion byte, Direction IpDirection, a *Accounti
 		log.Fatalf("Bad IP version %d", IpVersion)
 	}
 	nflog.makeGroup(McastGroup, nflog.IpPacket.HeaderSize)
+	// Start the background process
+	a.stopWg.Add(1)
+	go nflog.Loop()
 	return nflog
 }
 
@@ -149,7 +157,8 @@ func goCallback(_nflog unsafe.Pointer, seq uint32, payload_len C.int, payload un
 	} else {
 		addr = i.Dst(packet)
 	}
-	nflog.a.Packet(nflog.Direction, addr, i.Length(packet), ip_version)
+	//nflog.a.Packet(nflog.Direction, addr, i.Length(packet), ip_version)
+	nflog.addPackets = append(nflog.addPackets, AddPacket{Direction: nflog.Direction, Addr: addr, Length: i.Length(packet), IpVersion: ip_version})
 }
 
 // Current nflog error
@@ -202,6 +211,7 @@ func (nflog *NfLog) makeGroup(group, size int) {
 
 // Receive packets in a loop until quit
 func (nflog *NfLog) Loop() {
+	defer nflog.stopWg.Done()
 	buf := make([]byte, RecvBufferSize)
 	for !nflog.quit {
 		nr, _, e := syscall.Recvfrom(nflog.fd, buf, 0)
@@ -209,8 +219,12 @@ func (nflog *NfLog) Loop() {
 			log.Printf("Recvfrom failed: %s", e)
 			nflog.errors++
 		} else {
-			// Handle messages in packet
+			// Handle messages in packet reusing memory
+			ps := <-nflog.a.returnAddPackets
+			nflog.addPackets = ps[:0]
 			C.nflog_handle_packet(nflog.h, (*C.char)(unsafe.Pointer(&buf[0])), (C.int)(nr))
+			nflog.a.processAddPackets <- nflog.addPackets
+			nflog.addPackets = nil
 		}
 	}
 
@@ -229,4 +243,6 @@ func (nflog *NfLog) Close() {
 		log.Printf("Closing NFLOG")
 	}
 	C.nflog_close(nflog.h)
+	log.Printf("Waiting for loop to die")
+	nflog.stopWg.Wait()
 }

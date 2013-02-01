@@ -1,4 +1,5 @@
 #/bin/sh
+
 iptables -F OUTPUT
 iptables -A OUTPUT -j NFLOG --nflog-group 4 --nflog-range 20 --nflog-threshold 50 --nflog-prefix "IPv4out"
 iptables -vnL OUTPUT
