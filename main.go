@@ -8,6 +8,11 @@ package main
 
 // FIXME don't dump stats file if empty?
 
+// FIXME have a max entries parameter
+// - dump the stats if get beyond that many entries?
+// - or just refuse to add any more?
+// - or add to 0.0.0.0 entry?
+
 import (
 	"bufio"
 	"flag"
