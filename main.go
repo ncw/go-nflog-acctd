@@ -164,7 +164,7 @@ func (a *Accounting) Packet(Direction IpDirection, Addr string, Length int) {
 		stat.Dest.Packets += 1
 	}
 	if *Debug {
-		log.Printf("IPv%d message %s Addr %s Size %d", IpVersion, Direction, net.IP(Addr), Length)
+		log.Printf("IP message %s Addr %s Size %d", Direction, net.IP(Addr), Length)
 	}
 }
 
