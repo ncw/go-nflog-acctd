@@ -5,10 +5,6 @@
 // Debian packages needed:
 //   apt-get install iptables-dev linux-libc-dev libnetfilter-log-dev
 
-// FIXME Get this under heavy load - ENOBUFS
-// 2013/01/31 17:38:21 Recvfrom failed: no buffer space available
-// Seems to be caused by buffer overflow
-
 package main
 
 import (
@@ -28,21 +24,24 @@ import (
 #include <libnetfilter_log/libnetfilter_log.h>
 
 // Forward definition of Go function
-void goCallback(void *, u_int32_t, int, void *);
+void processPacket(void *, u_int32_t, int, void *);
 
-// Callback to hand the data back to Go
-static int _callback(struct nflog_g_handle *gh, struct nfgenmsg *nfmsg, struct nflog_data *nfd, void *data) {
+// Process the incoming packet, handing it back to Go as soon as possible
+static int _processPacket(struct nflog_g_handle *gh, struct nfgenmsg *nfmsg, struct nflog_data *nfd, void *data) {
 	char *payload = 0;
 	int payload_len = nflog_get_payload(nfd, &payload);
 	u_int32_t seq = 0;
 	nflog_get_seq(nfd, &seq);
-	goCallback(data, seq, payload_len, payload);
+	processPacket(data, seq, payload_len, payload);
 	return 0;
  }
 
 // Register the callback - can't be done from Go
+//
+// We have to register a C function _processPacket which is a thin
+// shim, calling the Go function as soon as possible
 static int _callback_register(struct nflog_g_handle *gh, void *data) {
-	return nflog_callback_register(gh, _callback, data);
+	return nflog_callback_register(gh, _processPacket, data);
 }
 */
 import "C"
@@ -125,8 +124,8 @@ var ip6mask = net.CIDRMask(*IPv6PrefixLength, 128)
 
 // Receive data from nflog on a callback from C
 //
-//export goCallback
-func goCallback(_nflog unsafe.Pointer, seq uint32, payload_len C.int, payload unsafe.Pointer) {
+//export processPacket
+func processPacket(_nflog unsafe.Pointer, seq uint32, payload_len C.int, payload unsafe.Pointer) {
 	nflog := (*NfLog)(_nflog)
 
 	// Get the packet into a []byte
