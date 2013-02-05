@@ -148,6 +148,7 @@ func processPacket(_nflog unsafe.Pointer, seq uint32, payload_len C.int, payload
 
 // Process a packet
 func (nflog *NfLog) ProcessPacket(packet []byte, seq uint32) {
+	// log.Printf("Packet %#v", packet)
 	// Peek the IP Version out of the header
 	ip_version := packet[IpVersion] >> IpVersionShift & IpVersionMask
 	// log.Printf("Received %d: size %d, IPv%d", seq, payload_len, ip_version)

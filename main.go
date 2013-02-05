@@ -37,6 +37,8 @@ const (
 	CsvTimeFormat = "2006-01-02 15:04:05"
 	// Format to use when making filenames
 	FileTimeFormat = "2006-01-02-150405"
+	// Number of packets to keep in the AddPackets Queue
+	AddPacketsQueueSize = 8
 )
 
 // Globals
@@ -130,7 +132,6 @@ type Accounting struct {
 }
 
 func NewAccounting() *Accounting {
-	const AddPacketsQueueSize = 8
 
 	a := &Accounting{
 		Ips:               make(IpMap, DefaultMapSize),
