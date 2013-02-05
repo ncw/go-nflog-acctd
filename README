@@ -1,0 +1,44 @@
+Go NFLOG accounting
+===================
+
+This is a program to do IP accounting using NFLOG
+
+
+Live Testing
+------------
+
+In one window
+
+sudo  ./go-nflog-acctd  -interval 10s -ip4-dst-group=4 -ip4-src-group=5 -ip6-dst-group=6 -ip6-src-group=7 -cpuprofile z.prof
+
+In another window
+
+sudo hping3 127.0.0.2 --syn -p 80 -s 53 --flood
+
+And a third use top to monitor the CPU usage
+
+Check correctness
+-----------------
+
+In one window
+
+sudo  ./go-nflog-acctd  -interval 1h -ip4-dst-group=4 -ip4-src-group=5 -ip6-dst-group=6 -ip6-src-group=7
+
+In another
+
+sudo hping3 127.0.0.2 --syn -p 80 -s 53 --flood
+
+Run for a while
+
+Stop the hping3
+Stop the go-nflog-acctd
+
+Check to see that the number of packets in the .csv is the same (give
+or take 1 or 2) as hping3 printed when it was quitted
+
+Benchmark
+---------
+
+Use this to do micro-optimisations on the packet handling code
+
+go test -v -bench .
