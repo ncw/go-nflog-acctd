@@ -44,6 +44,7 @@ var (
 	// Flags
 	IPv4SourceGroup  = flag.Int("ip4-src-group", 0, "NFLog Group to read IPv4 packets and account the source address")
 	IPv4DestGroup    = flag.Int("ip4-dst-group", 0, "NFLog Group to read IPv4 packets and account the destination address")
+	IPv4PrefixLength = flag.Int("ip4-prefix-length", 32, "Size of the IPv4 prefix to account to, default is /32")
 	IPv6SourceGroup  = flag.Int("ip6-src-group", 0, "NFLog Group to read IPv6 packets and account the source address")
 	IPv6DestGroup    = flag.Int("ip6-dst-group", 0, "NFLog Group to read IPv6 packets and account the destination address")
 	IPv6PrefixLength = flag.Int("ip6-prefix-length", 64, "Size of the IPv6 prefix to account to, default is /64")
@@ -354,18 +355,18 @@ func main() {
 	a := NewAccounting()
 	var nflogs []*NfLog
 
-	config := func(Group int, IpVersion byte, Direction IpDirection) {
+	config := func(Group int, IpVersion byte, Direction IpDirection, MaskBits int) {
 		if Group > 0 {
-			log.Printf("Monitoring NFLog multicast group %d for IPv%d %s", Group, IpVersion, Direction)
-			nflog := NewNfLog(Group, IpVersion, Direction, a)
+			log.Printf("Monitoring NFLog multicast group %d for IPv%d %s mask /%d", Group, IpVersion, Direction, MaskBits)
+			nflog := NewNfLog(Group, IpVersion, Direction, MaskBits, a)
 			nflogs = append(nflogs, nflog)
 		}
 	}
 
-	config(*IPv4DestGroup, 4, IpDest)
-	config(*IPv4SourceGroup, 4, IpSource)
-	config(*IPv6DestGroup, 6, IpDest)
-	config(*IPv6SourceGroup, 6, IpSource)
+	config(*IPv4DestGroup, 4, IpDest, *IPv4PrefixLength)
+	config(*IPv4SourceGroup, 4, IpSource, *IPv4PrefixLength)
+	config(*IPv6DestGroup, 6, IpDest, *IPv6PrefixLength)
+	config(*IPv6SourceGroup, 6, IpSource, *IPv6PrefixLength)
 
 	if len(nflogs) == 0 {
 		log.Fatal("Not monitoring any groups - exiting")

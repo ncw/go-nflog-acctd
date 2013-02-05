@@ -69,6 +69,10 @@ type NfLog struct {
 	errors int64
 	// Flavour of IP we are expecting, 4 or 6
 	IpVersion byte
+	// Mask for the IP
+	Mask net.IPMask
+	// Whether to apply the mask or not
+	UseMask bool
 	// Are we account the source or the destination address
 	Direction IpDirection
 	// Flavour of IP packet we are decoding
@@ -86,7 +90,7 @@ type NfLog struct {
 // McastGroup is that specified in ip[6]tables
 // IPv6 is a flag to say if it is IPv6 or not
 // Direction is to monitor the source address or the dest address
-func NewNfLog(McastGroup int, IpVersion byte, Direction IpDirection, a *Accounting) *NfLog {
+func NewNfLog(McastGroup int, IpVersion byte, Direction IpDirection, MaskBits int, a *Accounting) *NfLog {
 	h := C.nflog_open()
 	if h == nil {
 		log.Fatalf("Failed to open NFLOG: %s", strerror())
@@ -114,13 +118,14 @@ func NewNfLog(McastGroup int, IpVersion byte, Direction IpDirection, a *Accounti
 	default:
 		log.Fatalf("Bad IP version %d", IpVersion)
 	}
+	addrBits := 8 * nflog.IpPacket.AddrLen
+	nflog.UseMask = MaskBits < addrBits
+	nflog.Mask = net.CIDRMask(MaskBits, addrBits)
 	nflog.makeGroup(McastGroup, nflog.IpPacket.HeaderSize)
 	// Start the background process
 	go nflog.Loop()
 	return nflog
 }
-
-var ip6mask = net.CIDRMask(*IPv6PrefixLength, 128)
 
 // Receive data from nflog on a callback from C
 //
@@ -165,8 +170,8 @@ func processPacket(_nflog unsafe.Pointer, seq uint32, payload_len C.int, payload
 	}
 
 	// Mask the address
-	if ip_version == 6 {
-		addr = addr.Mask(ip6mask)
+	if nflog.UseMask {
+		addr = addr.Mask(nflog.Mask)
 	}
 
 	nflog.addPackets = append(nflog.addPackets, AddPacket{
