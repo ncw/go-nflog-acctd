@@ -70,7 +70,7 @@ The bandwidth logs are written in CSV format to /var/log/accounting by default
 They are named by "start of period-end-of-period.csv" eg
 "2013-02-11-150000_2013-02-11-160000.csv"
 
-The logs always start with a hearder row then data.  IP addresses can
+The logs always start with a header row then data.  IP addresses can
 be IPv4 or IPv6 addresses, either of which can have been masked.
 
     Time,IP,SourceBytes,SourcePackets,DestBytes,DestPackets
