@@ -165,7 +165,7 @@ func (nflog *NfLog) ProcessPacket(packet []byte, seq uint32) {
 	i := nflog.IpPacket
 	if len(packet) < i.HeaderSize {
 		nflog.errors++
-		log.Printf("Short IPv%s packet %d/%d bytes", ip_version, len(packet), i.HeaderSize)
+		log.Printf("Short IPv%d packet %d/%d bytes", ip_version, len(packet), i.HeaderSize)
 		return
 	}
 
