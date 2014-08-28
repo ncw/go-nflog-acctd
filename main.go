@@ -361,13 +361,10 @@ func main() {
 	}
 
 	a := NewAccounting()
-	var nflogs []*NfLog
-
 	config := func(Group int, IpVersion byte, Direction IpDirection, MaskBits int) {
 		if Group > 0 {
 			log.Printf("Monitoring NFLog multicast group %d for IPv%d %s mask /%d", Group, IpVersion, Direction, MaskBits)
-			nflog := NewNfLog(Group, IpVersion, Direction, MaskBits, a)
-			nflogs = append(nflogs, nflog)
+			NewNfLog(Group, IpVersion, Direction, MaskBits, a)
 		}
 	}
 
@@ -376,7 +373,7 @@ func main() {
 	config(*IPv6DestGroup, 6, IpDest, *IPv6PrefixLength)
 	config(*IPv6SourceGroup, 6, IpSource, *IPv6PrefixLength)
 
-	if len(nflogs) == 0 {
+	if nflogs.Count() == 0 {
 		log.Fatal("Not monitoring any groups - exiting")
 	}
 
@@ -391,8 +388,6 @@ func main() {
 	s := <-ch
 	log.Printf("%s received - shutting down", s)
 	a.Stop()
-	for _, nflog := range nflogs {
-		nflog.Close()
-	}
+	nflogs.Stop()
 	log.Printf("Exit")
 }

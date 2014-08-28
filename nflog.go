@@ -22,9 +22,10 @@ import (
 #include <sys/stat.h>
 #include <stdlib.h>
 #include <libnetfilter_log/libnetfilter_log.h>
+#include <inttypes.h>
 
 // Forward definition of Go function
-void processPacket(void *, u_int32_t, int, void *);
+void processPacket(intptr_t, u_int32_t, int, void *);
 
 // Process the incoming packet, handing it back to Go as soon as possible
 static int _processPacket(struct nflog_g_handle *gh, struct nfgenmsg *nfmsg, struct nflog_data *nfd, void *data) {
@@ -32,7 +33,7 @@ static int _processPacket(struct nflog_g_handle *gh, struct nfgenmsg *nfmsg, str
 	int payload_len = nflog_get_payload(nfd, &payload);
 	u_int32_t seq = 0;
 	nflog_get_seq(nfd, &seq);
-	processPacket(data, seq, payload_len, payload);
+	processPacket((intptr_t)data, seq, payload_len, payload);
 	return 0;
  }
 
@@ -40,8 +41,8 @@ static int _processPacket(struct nflog_g_handle *gh, struct nfgenmsg *nfmsg, str
 //
 // We have to register a C function _processPacket which is a thin
 // shim, calling the Go function as soon as possible
-static int _callback_register(struct nflog_g_handle *gh, void *data) {
-	return nflog_callback_register(gh, _processPacket, data);
+static int _callback_register(struct nflog_g_handle *gh, intptr_t data) {
+	return nflog_callback_register(gh, _processPacket, (void *)data);
 }
 */
 import "C"
@@ -83,6 +84,34 @@ type NfLog struct {
 	quit chan struct{}
 	// Buffer for accumulated packets
 	addPackets []AddPacket
+	// Index of this in nflogs - uses to pass to C instead of a Go pointer
+	index int
+}
+
+// An array of NfLog pointers
+type NfLogs [16]*NfLog
+
+// A global array of all NfLogs in use
+var nflogs NfLogs
+
+// Count all active NfLogs
+func (ns NfLogs) Count() int {
+	active := 0
+	for _, nflog := range ns {
+		if nflog != nil {
+			active++
+		}
+	}
+	return active
+}
+
+// Stop all active NfLogs
+func (ns NfLogs) Stop() {
+	for _, nflog := range ns {
+		if nflog != nil {
+			nflog.Close()
+		}
+	}
 }
 
 // Create a new NfLog
@@ -111,6 +140,15 @@ func NewNfLog(McastGroup int, IpVersion byte, Direction IpDirection, MaskBits in
 		a:          a,
 		quit:       make(chan struct{}),
 	}
+	for i := range nflogs {
+		if nflogs[i] == nil {
+			nflog.index = i
+			nflogs[i] = nflog
+			goto found
+		}
+	}
+	log.Fatal("Too many filters")
+found:
 	switch IpVersion {
 	case 4:
 		nflog.IpPacket = Ip4Packet
@@ -131,8 +169,8 @@ func NewNfLog(McastGroup int, IpVersion byte, Direction IpDirection, MaskBits in
 // Receive data from nflog on a callback from C
 //
 //export processPacket
-func processPacket(_nflog unsafe.Pointer, seq uint32, payload_len C.int, payload unsafe.Pointer) {
-	nflog := (*NfLog)(_nflog)
+func processPacket(nflogIndex C.intptr_t, seq uint32, payload_len C.int, payload unsafe.Pointer) {
+	nflog := nflogs[uintptr(nflogIndex)]
 
 	// Get the packet into a []byte
 	// NB if the C data goes away then BAD things will happen!
@@ -234,8 +272,11 @@ func (nflog *NfLog) makeGroup(group, size int) {
 	}
 
 	// Register the callback now we are set up
-	// FIXME passing pointer to Go memory to C
-	C._callback_register(gh, unsafe.Pointer(nflog))
+	//
+	// Note that we pass an index into an array, not a pointer to
+	// the nflog - it isn't a good idea for C to hold pointers to
+	// go objects which might move
+	C._callback_register(gh, C.intptr_t(nflog.index))
 }
 
 // Receive packets in a loop until quit
@@ -246,14 +287,13 @@ func (nflog *NfLog) Loop() {
 		log.Fatal("No memory for malloc")
 	}
 	defer C.free(pbuf)
-OUTER:
 	for {
+		nr := C.recv(nflog.fd, pbuf, buflen, 0)
 		select {
 		case <-nflog.quit:
-			break OUTER
+			return
 		default:
 		}
-		nr := C.recv(nflog.fd, pbuf, buflen, 0)
 		if nr < 0 {
 			log.Printf("Recvfrom failed: %s", strerror())
 			nflog.errors++
@@ -271,17 +311,20 @@ OUTER:
 
 // Close the NfLog down
 func (nflog *NfLog) Close() {
-	if *Debug {
-		log.Printf("Unbinding this socket (%d) from group %d", nflog.fd, nflog.McastGroup)
-	}
 	close(nflog.quit)
-	if C.nflog_unbind_group(nflog.gh) < 0 {
-		log.Printf("nflog_unbind_group(%d) failed: %s", nflog.McastGroup, strerror())
-	}
+	// Sometimes hangs and doesn't seem to be necessary
+	// if *Debug {
+	// 	log.Printf("Unbinding socket %d from group %d", nflog.fd, nflog.McastGroup)
+	// }
+	// if C.nflog_unbind_group(nflog.gh) < 0 {
+	// 	log.Printf("nflog_unbind_group(%d) failed: %s", nflog.McastGroup, strerror())
+	// }
 	if *Debug {
-		log.Printf("Closing nflog")
+		log.Printf("Closing nflog socket %d group %d", nflog.fd, nflog.McastGroup)
 	}
 	if C.nflog_close(nflog.h) < 0 {
 		log.Printf("nflog_close failed: %s", strerror())
 	}
+	// Mark this index as no longer in use
+	nflogs[nflog.index] = nil
 }
