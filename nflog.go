@@ -142,7 +142,7 @@ func NewNfLog(McastGroup int, IpVersion byte, Direction IpDirection, MaskBits in
 	if h == nil {
 		log.Fatalf("Failed to open NFLOG: %s", strerror())
 	}
-	if *Debug {
+	if *Verbose {
 		log.Println("Binding nfnetlink_log to AF_INET")
 	}
 	if C.nflog_bind_pf(h, C.AF_INET) < 0 {
@@ -233,6 +233,9 @@ func (nflog *NfLog) processPackets(addPackets []AddPacket) []AddPacket {
 	if n >= C.MAX_PACKETS {
 		log.Printf("Packets buffer overflowed")
 	}
+	if *Verbose {
+		log.Printf("%d: Processing %d packets", nflog.McastGroup, n)
+	}
 
 	var packet []byte
 	sliceHeader := (*reflect.SliceHeader)((unsafe.Pointer(&packet)))
@@ -265,7 +268,7 @@ func strerror() error {
 
 // Connects to the group specified with the size
 func (nflog *NfLog) makeGroup(group, size int) {
-	if *Debug {
+	if *Verbose {
 		log.Printf("Binding this socket to group %d", group)
 	}
 	gh := C.nflog_bind_group(nflog.h, (C.u_int16_t)(group))
@@ -294,7 +297,7 @@ func (nflog *NfLog) makeGroup(group, size int) {
 		log.Fatalf("nflog_set_timeout: %s", strerror())
 	}
 
-	if *Debug {
+	if *Verbose {
 		log.Printf("Setting copy_packet mode to %d bytes", size)
 	}
 	if C.nflog_set_mode(gh, C.NFULNL_COPY_PACKET, (C.uint)(size)) < 0 {
@@ -342,13 +345,13 @@ func (nflog *NfLog) Loop() {
 func (nflog *NfLog) Close() {
 	close(nflog.quit)
 	// Sometimes hangs and doesn't seem to be necessary
-	// if *Debug {
+	// if *Verbose {
 	// 	log.Printf("Unbinding socket %d from group %d", nflog.fd, nflog.McastGroup)
 	// }
 	// if C.nflog_unbind_group(nflog.gh) < 0 {
 	// 	log.Printf("nflog_unbind_group(%d) failed: %s", nflog.McastGroup, strerror())
 	// }
-	if *Debug {
+	if *Verbose {
 		log.Printf("Closing nflog socket %d group %d", nflog.fd, nflog.McastGroup)
 	}
 	if C.nflog_close(nflog.h) < 0 {

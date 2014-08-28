@@ -53,6 +53,7 @@ var (
 	Cpus             = flag.Int("cpus", 0, "Number of CPUs to use - default 0 is all of them")
 	UseSyslog        = flag.Bool("syslog", false, "Use Syslog for logging")
 	Debug            = flag.Bool("debug", false, "Print every single packet that arrives")
+	Verbose          = flag.Bool("verbose", false, "Print more logging stuff")
 	Interval         = flag.Duration("interval", time.Minute*5, "Interval to log stats")
 	LogDirectory     = flag.String("log-directory", "/var/log/accounting", "Directory to write accounting files to.")
 	CpuProfile       = flag.String("cpuprofile", "", "Write cpu profile to file")
@@ -200,7 +201,7 @@ func (a *Accounting) Engine() {
 
 		// Stop the engine
 		case <-a.engineStop:
-			if *Debug {
+			if *Verbose {
 				log.Printf("Engine stop")
 			}
 			return
@@ -252,13 +253,13 @@ func (a *Accounting) DumpStats() {
 	a.StartPeriod = time.Now()
 	a.EndPeriod = FlooredTime(a.StartPeriod).Add(*Interval)
 	for {
-		if *Debug {
+		if *Verbose {
 			log.Printf("Next stats dump at %s", a.EndPeriod)
 		}
 		select {
 		case <-time.After(a.EndPeriod.Sub(time.Now())):
 		case <-a.dumpStatsStop:
-			if *Debug {
+			if *Verbose {
 				log.Printf("DumpStats stop")
 			}
 			a.EndPeriod = time.Now()
@@ -285,12 +286,12 @@ func (a *Accounting) Start() {
 func (a *Accounting) Stop() {
 	log.Printf("Stopping accounting")
 	close(a.dumpStatsStop)
-	if *Debug {
+	if *Verbose {
 		log.Printf("Wait for dump stats stop")
 	}
 	a.dumpStatsWg.Wait()
 	close(a.engineStop)
-	if *Debug {
+	if *Verbose {
 		log.Printf("Wait for engine stop")
 	}
 	a.engineWg.Wait()
@@ -312,6 +313,9 @@ func usage() {
 func main() {
 	flag.Usage = usage
 	flag.Parse()
+	if *Debug {
+		*Verbose = true
+	}
 
 	const Day = 24 * time.Hour
 
