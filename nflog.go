@@ -234,14 +234,18 @@ func (nflog *NfLog) makeGroup(group, size int) {
 	}
 
 	// Register the callback now we are set up
+	// FIXME passing pointer to Go memory to C
 	C._callback_register(gh, unsafe.Pointer(nflog))
 }
 
 // Receive packets in a loop until quit
 func (nflog *NfLog) Loop() {
-	buf := make([]byte, RecvBufferSize)
-	pbuf := unsafe.Pointer(&buf[0])
-	buflen := C.size_t(len(buf))
+	buflen := C.size_t(RecvBufferSize)
+	pbuf := C.malloc(buflen)
+	if pbuf == nil {
+		log.Fatal("No memory for malloc")
+	}
+	defer C.free(pbuf)
 OUTER:
 	for {
 		select {
