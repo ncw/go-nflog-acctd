@@ -65,7 +65,8 @@ import "C"
 
 const (
 	RecvBufferSize  = 4 * 1024 * 1024
-	NflogBufferSize = 4 * 1024 * 1024
+	NflogBufferSize = 128 * 1024 // Must be <= 128k (checked in kernel source)
+	NflogTimeout    = 100        // Timeout before sending data in 1/100th second
 	MaxQueueLogs    = C.MAX_PACKETS - 1
 )
 
@@ -289,10 +290,9 @@ func (nflog *NfLog) makeGroup(group, size int) {
 	}
 
 	// Set timeout
-	// Doesn't seem to make any difference and don't know the unit
-	// if C.nflog_set_timeout(gh, NflogTimeout) < 0 {
-	// 	log.Fatalf("nflog_set_timeout: %s", strerror())
-	// }
+	if C.nflog_set_timeout(gh, NflogTimeout) < 0 {
+		log.Fatalf("nflog_set_timeout: %s", strerror())
+	}
 
 	if *Debug {
 		log.Printf("Setting copy_packet mode to %d bytes", size)
@@ -303,9 +303,9 @@ func (nflog *NfLog) makeGroup(group, size int) {
 
 	// Register the callback now we are set up
 	//
-	// Note that we pass an index into an array, not a pointer to
-	// the nflog - it isn't a good idea for C to hold pointers to
-	// go objects which might move
+	// Note that we pass a block of memory allocated by C.malloc -
+	// it isn't a good idea for C to hold pointers to go objects
+	// which might move
 	C._callback_register(gh, nflog.packets)
 }
 
