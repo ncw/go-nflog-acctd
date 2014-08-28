@@ -24,25 +24,41 @@ import (
 #include <libnetfilter_log/libnetfilter_log.h>
 #include <inttypes.h>
 
-// Forward definition of Go function
-void processPacket(intptr_t, u_int32_t, int, void *);
+// A record of each packet
+typedef struct {
+	char *payload;
+	int payload_len;
+	u_int32_t seq;
+} packet;
 
-// Process the incoming packet, handing it back to Go as soon as possible
+// Max number of packets to collect at once
+#define MAX_PACKETS (16*1024)
+
+// A load of packets with count
+typedef struct {
+	int index;
+	packet pkt[MAX_PACKETS];
+} packets;
+
+// Process the incoming packet putting pointers to the data to be handled by Go
 static int _processPacket(struct nflog_g_handle *gh, struct nfgenmsg *nfmsg, struct nflog_data *nfd, void *data) {
-	char *payload = 0;
-	int payload_len = nflog_get_payload(nfd, &payload);
-	u_int32_t seq = 0;
-	nflog_get_seq(nfd, &seq);
-	processPacket((intptr_t)data, seq, payload_len, payload);
+	packets *ps = (packets *)data;
+	if (ps->index >= MAX_PACKETS) {
+		return 1;
+	}
+	packet *p = &ps->pkt[ps->index++];
+	p->payload = 0;
+	p->payload_len = nflog_get_payload(nfd, &p->payload);
+	p->seq = 0;
+	nflog_get_seq(nfd, &p->seq);
 	return 0;
  }
 
 // Register the callback - can't be done from Go
 //
-// We have to register a C function _processPacket which is a thin
-// shim, calling the Go function as soon as possible
-static int _callback_register(struct nflog_g_handle *gh, intptr_t data) {
-	return nflog_callback_register(gh, _processPacket, (void *)data);
+// We have to register a C function _processPacket
+static int _callback_register(struct nflog_g_handle *gh, packets *data) {
+	return nflog_callback_register(gh, _processPacket, data);
 }
 */
 import "C"
@@ -50,8 +66,7 @@ import "C"
 const (
 	RecvBufferSize  = 4 * 1024 * 1024
 	NflogBufferSize = 4 * 1024 * 1024
-	MaxQueueLogs    = 1024 * 1024
-	// NflogTimeout   = 1024 // what unit?
+	MaxQueueLogs    = C.MAX_PACKETS - 1
 )
 
 // NfLog
@@ -86,6 +101,8 @@ type NfLog struct {
 	addPackets []AddPacket
 	// Index of this in nflogs - uses to pass to C instead of a Go pointer
 	index int
+	// Pointer to the packets
+	packets *C.packets
 }
 
 // An array of NfLog pointers
@@ -139,6 +156,7 @@ func NewNfLog(McastGroup int, IpVersion byte, Direction IpDirection, MaskBits in
 		Direction:  Direction,
 		a:          a,
 		quit:       make(chan struct{}),
+		packets:    (*C.packets)(C.malloc(C.sizeof_packets)),
 	}
 	for i := range nflogs {
 		if nflogs[i] == nil {
@@ -166,27 +184,8 @@ found:
 	return nflog
 }
 
-// Receive data from nflog on a callback from C
-//
-//export processPacket
-func processPacket(nflogIndex C.intptr_t, seq uint32, payload_len C.int, payload unsafe.Pointer) {
-	nflog := nflogs[uintptr(nflogIndex)]
-
-	// Get the packet into a []byte
-	// NB if the C data goes away then BAD things will happen!
-	// So don't keep slices from this after returning from this function
-	var packet []byte
-	sliceHeader := (*reflect.SliceHeader)((unsafe.Pointer(&packet)))
-	sliceHeader.Cap = int(payload_len)
-	sliceHeader.Len = int(payload_len)
-	sliceHeader.Data = uintptr(payload)
-
-	// Call a standard Go method now
-	nflog.ProcessPacket(packet, seq)
-}
-
 // Process a packet
-func (nflog *NfLog) ProcessPacket(packet []byte, seq uint32) {
+func (nflog *NfLog) ProcessPacket(packet []byte, seq uint32) AddPacket {
 	// log.Printf("Packet %#v", packet)
 	// Peek the IP Version out of the header
 	ip_version := packet[IpVersion] >> IpVersionShift & IpVersionMask
@@ -199,13 +198,13 @@ func (nflog *NfLog) ProcessPacket(packet []byte, seq uint32) {
 	if ip_version != nflog.IpVersion {
 		nflog.errors++
 		log.Printf("Bad IP version: %d", ip_version)
-		return
+		return AddPacket{Length: -1}
 	}
 	i := nflog.IpPacket
 	if len(packet) < i.HeaderSize {
 		nflog.errors++
 		log.Printf("Short IPv%d packet %d/%d bytes", ip_version, len(packet), i.HeaderSize)
-		return
+		return AddPacket{Length: -1}
 	}
 
 	var addr net.IP
@@ -220,11 +219,42 @@ func (nflog *NfLog) ProcessPacket(packet []byte, seq uint32) {
 		addr = addr.Mask(nflog.Mask)
 	}
 
-	nflog.addPackets = append(nflog.addPackets, AddPacket{
+	return AddPacket{
 		Direction: nflog.Direction,
 		Addr:      string(addr),
 		Length:    i.Length(packet),
-	})
+	}
+}
+
+// Receive data from nflog stored in nflog.packets
+func (nflog *NfLog) processPackets(addPackets []AddPacket) []AddPacket {
+	n := int(nflog.packets.index)
+	if n >= C.MAX_PACKETS {
+		log.Printf("Packets buffer overflowed")
+	}
+
+	var packet []byte
+	sliceHeader := (*reflect.SliceHeader)((unsafe.Pointer(&packet)))
+
+	for i := 0; i < n; i++ {
+		p := &nflog.packets.pkt[i]
+
+		// Get the packet into a []byte
+		// NB if the C data goes away then BAD things will happen!
+		// So don't keep slices from this after returning from this function
+		sliceHeader.Cap = int(p.payload_len)
+		sliceHeader.Len = int(p.payload_len)
+		sliceHeader.Data = uintptr(unsafe.Pointer(p.payload))
+
+		// Process the packet
+		newAddPacket := nflog.ProcessPacket(packet, uint32(p.seq))
+		if newAddPacket.Length >= 0 {
+			addPackets = append(addPackets, newAddPacket)
+		}
+	}
+	sliceHeader = nil
+	packet = nil
+	return addPackets
 }
 
 // Current nflog error
@@ -276,7 +306,7 @@ func (nflog *NfLog) makeGroup(group, size int) {
 	// Note that we pass an index into an array, not a pointer to
 	// the nflog - it isn't a good idea for C to hold pointers to
 	// go objects which might move
-	C._callback_register(gh, C.intptr_t(nflog.index))
+	C._callback_register(gh, nflog.packets)
 }
 
 // Receive packets in a loop until quit
@@ -300,10 +330,9 @@ func (nflog *NfLog) Loop() {
 		} else {
 			// Handle messages in packet reusing memory
 			ps := <-nflog.a.returnAddPackets
-			nflog.addPackets = ps[:0]
+			nflog.packets.index = 0
 			C.nflog_handle_packet(nflog.h, (*C.char)(pbuf), (C.int)(nr))
-			nflog.a.processAddPackets <- nflog.addPackets
-			nflog.addPackets = nil
+			nflog.a.processAddPackets <- nflog.processPackets(ps[:0])
 		}
 	}
 
@@ -327,4 +356,5 @@ func (nflog *NfLog) Close() {
 	}
 	// Mark this index as no longer in use
 	nflogs[nflog.index] = nil
+	C.free(unsafe.Pointer(nflog.packets))
 }
