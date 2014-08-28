@@ -56,6 +56,7 @@ var (
 	Interval         = flag.Duration("interval", time.Minute*5, "Interval to log stats")
 	LogDirectory     = flag.String("log-directory", "/var/log/accounting", "Directory to write accounting files to.")
 	CpuProfile       = flag.String("cpuprofile", "", "Write cpu profile to file")
+	MemProfile       = flag.String("memprofile", "", "write memory profile to this file")
 
 	// Globals
 	BaseName       = path.Base(os.Args[0])
@@ -387,6 +388,16 @@ func main() {
 	signal.Notify(ch, syscall.SIGQUIT)
 	s := <-ch
 	log.Printf("%s received - shutting down", s)
+	if *MemProfile != "" {
+		log.Printf("Writing memory profile %q\n", *MemProfile)
+		f, err := os.Create(*MemProfile)
+		if err != nil {
+			log.Fatal(err)
+		}
+		pprof.WriteHeapProfile(f)
+		f.Close()
+		return
+	}
 	a.Stop()
 	nflogs.Stop()
 	log.Printf("Exit")
