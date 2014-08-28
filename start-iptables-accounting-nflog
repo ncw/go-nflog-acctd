@@ -1,17 +1,13 @@
 #/bin/sh
 
-iptables -F OUTPUT
-iptables -A OUTPUT -j NFLOG --nflog-group 4 --nflog-range 20 --nflog-threshold 50 --nflog-prefix "IPv4out"
+iptables -I OUTPUT 1 -j NFLOG --nflog-group 4 --nflog-range 20 --nflog-threshold 50 --nflog-prefix "IPv4out"
 iptables -vnL OUTPUT
 
-ip6tables -F OUTPUT
-ip6tables -A OUTPUT -j NFLOG --nflog-group 6 --nflog-range 40 --nflog-threshold 50 --nflog-prefix "IPv6out"
+ip6tables -I OUTPUT 1 -j NFLOG --nflog-group 6 --nflog-range 40 --nflog-threshold 50 --nflog-prefix "IPv6out"
 ip6tables -vnL OUTPUT
 
-iptables -F INPUT
-iptables -A INPUT -j NFLOG --nflog-group 5 --nflog-range 20 --nflog-threshold 50 --nflog-prefix "IPv4in"
+iptables -I INPUT 1 -j NFLOG --nflog-group 5 --nflog-range 20 --nflog-threshold 50 --nflog-prefix "IPv4in"
 iptables -vnL INPUT
 
-ip6tables -F INPUT
-ip6tables -A INPUT -j NFLOG --nflog-group 7 --nflog-range 40 --nflog-threshold 50 --nflog-prefix "IPv6in"
+ip6tables -I INPUT 1 -j NFLOG --nflog-group 7 --nflog-range 40 --nflog-threshold 50 --nflog-prefix "IPv6in"
 ip6tables -vnL INPUT
