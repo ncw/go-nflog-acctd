@@ -123,8 +123,10 @@ type Accounting struct {
 	StartPeriod       time.Time
 	EndPeriod         time.Time
 	Ips               IpMap
-	stopWg            sync.WaitGroup
-	stop              chan bool
+	engineWg          sync.WaitGroup
+	dumpStatsWg       sync.WaitGroup
+	engineStop        chan struct{}
+	dumpStatsStop     chan struct{}
 	processAddPackets chan []AddPacket
 	returnAddPackets  chan []AddPacket
 	flip              chan bool
@@ -132,10 +134,10 @@ type Accounting struct {
 }
 
 func NewAccounting() *Accounting {
-
 	a := &Accounting{
 		Ips:               make(IpMap, DefaultMapSize),
-		stop:              make(chan bool, 2),
+		engineStop:        make(chan struct{}),
+		dumpStatsStop:     make(chan struct{}),
 		processAddPackets: make(chan []AddPacket, AddPacketsQueueSize),
 		returnAddPackets:  make(chan []AddPacket, AddPacketsQueueSize),
 		flip:              make(chan bool, 1),
@@ -150,7 +152,7 @@ func NewAccounting() *Accounting {
 	return a
 }
 
-// Make a new map returning the old one while holding the lock
+// Make a new map returning the old one
 func (a *Accounting) newMaps() IpMap {
 	a.flip <- true
 	return <-a.oldIps
@@ -180,7 +182,7 @@ func (a *Accounting) Packet(Direction IpDirection, Addr string, Length int) {
 // It has sole control over the Ips map which means that no locking is
 // required
 func (a *Accounting) Engine() {
-	defer a.stopWg.Done()
+	defer a.engineWg.Done()
 	for {
 		select {
 		// Process a bunch of packets
@@ -196,7 +198,7 @@ func (a *Accounting) Engine() {
 			a.Ips = make(IpMap, DefaultMapSize)
 
 		// Stop the engine
-		case <-a.stop:
+		case <-a.engineStop:
 			if *Debug {
 				log.Printf("Engine stop")
 			}
@@ -245,7 +247,7 @@ func (a *Accounting) DumpFile() {
 
 // Schedules file dumping dump for the end of the interval
 func (a *Accounting) DumpStats() {
-	defer a.stopWg.Done()
+	defer a.dumpStatsWg.Done()
 	a.StartPeriod = time.Now()
 	a.EndPeriod = FlooredTime(a.StartPeriod).Add(*Interval)
 	for {
@@ -254,10 +256,12 @@ func (a *Accounting) DumpStats() {
 		}
 		select {
 		case <-time.After(a.EndPeriod.Sub(time.Now())):
-		case <-a.stop:
+		case <-a.dumpStatsStop:
 			if *Debug {
 				log.Printf("DumpStats stop")
 			}
+			a.EndPeriod = time.Now()
+			a.DumpFile()
 			return
 		}
 		a.DumpFile()
@@ -269,23 +273,26 @@ func (a *Accounting) DumpStats() {
 // Starts the accounting
 func (a *Accounting) Start() {
 	log.Printf("Starting accounting")
-	a.stopWg.Add(2)
-	go a.DumpStats()
+	a.engineWg.Add(1)
 	go a.Engine()
+	a.dumpStatsWg.Add(1)
+	go a.DumpStats()
 	log.Printf("Started accounting")
 }
 
 // Stops the accounting saving the stats so far
 func (a *Accounting) Stop() {
 	log.Printf("Stopping accounting")
-	a.EndPeriod = time.Now()
-	a.DumpFile()
-	a.stop <- true
-	a.stop <- true
+	close(a.dumpStatsStop)
 	if *Debug {
-		log.Printf("Wait for stop")
+		log.Printf("Wait for dump stats stop")
 	}
-	a.stopWg.Wait()
+	a.dumpStatsWg.Wait()
+	close(a.engineStop)
+	if *Debug {
+		log.Printf("Wait for engine stop")
+	}
+	a.engineWg.Wait()
 	log.Printf("Stopped accounting")
 }
 

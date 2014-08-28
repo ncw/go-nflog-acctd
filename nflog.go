@@ -80,7 +80,7 @@ type NfLog struct {
 	// Accounting
 	a *Accounting
 	// Quit the loop
-	quit bool
+	quit chan struct{}
 	// Buffer for accumulated packets
 	addPackets []AddPacket
 }
@@ -109,6 +109,7 @@ func NewNfLog(McastGroup int, IpVersion byte, Direction IpDirection, MaskBits in
 		IpVersion:  IpVersion,
 		Direction:  Direction,
 		a:          a,
+		quit:       make(chan struct{}),
 	}
 	switch IpVersion {
 	case 4:
@@ -241,7 +242,13 @@ func (nflog *NfLog) Loop() {
 	buf := make([]byte, RecvBufferSize)
 	pbuf := unsafe.Pointer(&buf[0])
 	buflen := C.size_t(len(buf))
-	for !nflog.quit {
+OUTER:
+	for {
+		select {
+		case <-nflog.quit:
+			break OUTER
+		default:
+		}
 		nr := C.recv(nflog.fd, pbuf, buflen, 0)
 		if nr < 0 {
 			log.Printf("Recvfrom failed: %s", strerror())
@@ -263,7 +270,7 @@ func (nflog *NfLog) Close() {
 	if *Debug {
 		log.Printf("Unbinding this socket (%d) from group %d", nflog.fd, nflog.McastGroup)
 	}
-	nflog.quit = true
+	close(nflog.quit)
 	if C.nflog_unbind_group(nflog.gh) < 0 {
 		log.Printf("nflog_unbind_group(%d) failed: %s", nflog.McastGroup, strerror())
 	}
