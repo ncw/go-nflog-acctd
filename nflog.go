@@ -138,15 +138,15 @@ func (ns NfLogs) Stop() {
 // IPv6 is a flag to say if it is IPv6 or not
 // Direction is to monitor the source address or the dest address
 func NewNfLog(McastGroup int, IpVersion byte, Direction IpDirection, MaskBits int, a *Accounting) *NfLog {
-	h := C.nflog_open()
-	if h == nil {
-		log.Fatalf("Failed to open NFLOG: %s", strerror())
+	h, err := C.nflog_open()
+	if h == nil || err != nil {
+		log.Fatalf("Failed to open NFLOG: %s", nflogError(err))
 	}
 	if *Verbose {
 		log.Println("Binding nfnetlink_log to AF_INET")
 	}
-	if C.nflog_bind_pf(h, C.AF_INET) < 0 {
-		log.Fatalf("nflog_bind_pf failed: %s", strerror())
+	if rc, err := C.nflog_bind_pf(h, C.AF_INET); rc < 0 || err != nil {
+		log.Fatalf("nflog_bind_pf failed: %s", nflogError(err))
 	}
 
 	nflog := &NfLog{
@@ -262,8 +262,11 @@ func (nflog *NfLog) processPackets(addPackets []AddPacket) []AddPacket {
 }
 
 // Current nflog error
-func strerror() error {
-	return syscall.Errno(C.nflog_errno)
+func nflogError(err error) error {
+	if C.nflog_errno != 0 {
+		return syscall.Errno(C.nflog_errno)
+	}
+	return err
 }
 
 // Connects to the group specified with the size
@@ -271,37 +274,37 @@ func (nflog *NfLog) makeGroup(group, size int) {
 	if *Verbose {
 		log.Printf("Binding this socket to group %d", group)
 	}
-	gh := C.nflog_bind_group(nflog.h, (C.u_int16_t)(group))
-	if gh == nil {
-		log.Fatalf("nflog_bind_group failed: %s", strerror())
+	gh, err := C.nflog_bind_group(nflog.h, (C.u_int16_t)(group))
+	if gh == nil || err != nil {
+		log.Fatalf("nflog_bind_group failed: %s", nflogError(err))
 	}
 	nflog.gh = gh
 
 	// Set the maximum amount of logs in buffer for this group
-	if C.nflog_set_qthresh(gh, MaxQueueLogs) < 0 {
-		log.Fatalf("nflog_set_qthresh failed: %s", strerror())
+	if rc, err := C.nflog_set_qthresh(gh, MaxQueueLogs); rc < 0 || err != nil {
+		log.Fatalf("nflog_set_qthresh failed: %s", nflogError(err))
 	}
 
 	// Set local sequence numbering to detect missing packets
-	if C.nflog_set_flags(gh, C.NFULNL_CFG_F_SEQ) < 0 {
-		log.Fatalf("nflog_set_flags failed: %s", strerror())
+	if rc, err := C.nflog_set_flags(gh, C.NFULNL_CFG_F_SEQ); rc < 0 || err != nil {
+		log.Fatalf("nflog_set_flags failed: %s", nflogError(err))
 	}
 
 	// Set buffer size large
-	if C.nflog_set_nlbufsiz(gh, NflogBufferSize) < 0 {
-		log.Fatalf("nflog_set_nlbufsiz: %s", strerror())
+	if rc, err := C.nflog_set_nlbufsiz(gh, NflogBufferSize); rc < 0 || err != nil {
+		log.Fatalf("nflog_set_nlbufsiz: %s", nflogError(err))
 	}
 
 	// Set timeout
-	if C.nflog_set_timeout(gh, NflogTimeout) < 0 {
-		log.Fatalf("nflog_set_timeout: %s", strerror())
+	if rc, err := C.nflog_set_timeout(gh, NflogTimeout); rc < 0 || err != nil {
+		log.Fatalf("nflog_set_timeout: %s", nflogError(err))
 	}
 
 	if *Verbose {
 		log.Printf("Setting copy_packet mode to %d bytes", size)
 	}
-	if C.nflog_set_mode(gh, C.NFULNL_COPY_PACKET, (C.uint)(size)) < 0 {
-		log.Fatalf("nflog_set_mode failed: %s", strerror())
+	if rc, err := C.nflog_set_mode(gh, C.NFULNL_COPY_PACKET, (C.uint)(size)); rc < 0 || err != nil {
+		log.Fatalf("nflog_set_mode failed: %s", nflogError(err))
 	}
 
 	// Register the callback now we are set up
@@ -321,14 +324,14 @@ func (nflog *NfLog) Loop() {
 	}
 	defer C.free(pbuf)
 	for {
-		nr := C.recv(nflog.fd, pbuf, buflen, 0)
+		nr, err := C.recv(nflog.fd, pbuf, buflen, 0)
 		select {
 		case <-nflog.quit:
 			return
 		default:
 		}
-		if nr < 0 {
-			log.Printf("Recvfrom failed: %s", strerror())
+		if nr < 0 || err != nil {
+			log.Printf("Recv failed: %s", err)
 			nflog.errors++
 		} else {
 			// Handle messages in packet reusing memory
@@ -348,14 +351,14 @@ func (nflog *NfLog) Close() {
 	// if *Verbose {
 	// 	log.Printf("Unbinding socket %d from group %d", nflog.fd, nflog.McastGroup)
 	// }
-	// if C.nflog_unbind_group(nflog.gh) < 0 {
-	// 	log.Printf("nflog_unbind_group(%d) failed: %s", nflog.McastGroup, strerror())
+	// if rc, err := C.nflog_unbind_group(nflog.gh); rc < 0 || err != nil {
+	// 	log.Printf("nflog_unbind_group(%d) failed: %s", nflog.McastGroup, nflogError(err))
 	// }
 	if *Verbose {
 		log.Printf("Closing nflog socket %d group %d", nflog.fd, nflog.McastGroup)
 	}
-	if C.nflog_close(nflog.h) < 0 {
-		log.Printf("nflog_close failed: %s", strerror())
+	if rc, err := C.nflog_close(nflog.h); rc < 0 || err != nil {
+		log.Printf("nflog_close failed: %s", nflogError(nil))
 	}
 	// Mark this index as no longer in use
 	nflogs[nflog.index] = nil
