@@ -58,6 +58,7 @@ var (
 	LogDirectory     = flag.String("log-directory", "/var/log/accounting", "Directory to write accounting files to.")
 	CpuProfile       = flag.String("cpuprofile", "", "Write cpu profile to file")
 	MemProfile       = flag.String("memprofile", "", "write memory profile to this file")
+	Priority         = flag.Int("priority", -19, "Set priority level")
 
 	// Globals
 	BaseName       = path.Base(os.Args[0])
@@ -363,6 +364,11 @@ func main() {
 		}
 		pprof.StartCPUProfile(f)
 		defer pprof.StopCPUProfile()
+	}
+
+	// Set priority
+	if err := syscall.Setpriority(syscall.PRIO_PROCESS, 0, *Priority); err != nil {
+		log.Printf("Failed to set priority %d: %v", *Priority, err)
 	}
 
 	a := NewAccounting()
