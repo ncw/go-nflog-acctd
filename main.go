@@ -367,7 +367,7 @@ func main() {
 	}
 
 	// Set priority
-	if err := syscall.Setpriority(syscall.PRIO_PROCESS, 0, *Priority); err != nil {
+	if err := syscall.Setpriority(syscall.PRIO_PGRP, 0, *Priority); err != nil {
 		log.Printf("Failed to set priority %d: %v", *Priority, err)
 	}
 
