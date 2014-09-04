@@ -16,11 +16,12 @@ import (
 )
 
 /*
-#cgo LDFLAGS: -lnetfilter_log
+#cgo LDFLAGS: -lnfnetlink -lnetfilter_log
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <stdlib.h>
+#include <libnfnetlink/libnfnetlink.h>
 #include <libnetfilter_log/libnetfilter_log.h>
 #include <inttypes.h>
 
@@ -64,10 +65,11 @@ static int _callback_register(struct nflog_g_handle *gh, packets *data) {
 import "C"
 
 const (
-	RecvBufferSize  = 4 * 1024 * 1024
-	NflogBufferSize = 128 * 1024 // Must be <= 128k (checked in kernel source)
-	NflogTimeout    = 100        // Timeout before sending data in 1/100th second
-	MaxQueueLogs    = C.MAX_PACKETS - 1
+	RecvBufferSize   = 4 * 1024 * 1024
+	NflogBufferSize  = 128 * 1024 // Must be <= 128k (checked in kernel source)
+	NfRecvBufferSize = 16 * 1024 * 1024
+	NflogTimeout     = 100 // Timeout before sending data in 1/100th second
+	MaxQueueLogs     = C.MAX_PACKETS - 1
 )
 
 // NfLog
@@ -293,6 +295,15 @@ func (nflog *NfLog) makeGroup(group, size int) {
 	// Set buffer size large
 	if rc, err := C.nflog_set_nlbufsiz(gh, NflogBufferSize); rc < 0 || err != nil {
 		log.Fatalf("nflog_set_nlbufsiz: %s", nflogError(err))
+	}
+
+	// Set recv buffer large - this produces ENOBUFS when too small
+	if rc, err := C.nfnl_rcvbufsiz(C.nflog_nfnlh(nflog.h), NfRecvBufferSize); rc < 0 || err != nil {
+		log.Fatalf("nfnl_rcvbufsiz: %s", err)
+	} else {
+		if rc < NfRecvBufferSize {
+			log.Fatalf("nfnl_rcvbufsiz: Failed to set buffer to %d got %d", NfRecvBufferSize, rc)
+		}
 	}
 
 	// Set timeout
