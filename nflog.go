@@ -276,7 +276,7 @@ func (nflog *NfLog) makeGroup(group, size int) {
 	if *Verbose {
 		log.Printf("Binding this socket to group %d", group)
 	}
-	gh, err := C.nflog_bind_group(nflog.h, (C.u_int16_t)(group))
+	gh, err := C.nflog_bind_group(nflog.h, (C.uint16_t)(group))
 	if gh == nil || err != nil {
 		log.Fatalf("nflog_bind_group failed: %s", nflogError(err))
 	}
