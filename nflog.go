@@ -61,6 +61,12 @@ static int _processPacket(struct nflog_g_handle *gh, struct nfgenmsg *nfmsg, str
 static int _callback_register(struct nflog_g_handle *gh, packets *data) {
 	return nflog_callback_register(gh, _processPacket, data);
 }
+
+// A thin shim to call nflog_bind_group to work around the changes to
+// the type of num
+static struct nflog_g_handle *_nflog_bind_group(struct nflog_handle *h, int num) {
+    return nflog_bind_group(h, num);
+}
 */
 import "C"
 
@@ -276,7 +282,7 @@ func (nflog *NfLog) makeGroup(group, size int) {
 	if *Verbose {
 		log.Printf("Binding this socket to group %d", group)
 	}
-	gh, err := C.nflog_bind_group(nflog.h, (C.u_int16_t)(group))
+	gh, err := C._nflog_bind_group(nflog.h, C.int(group))
 	if gh == nil || err != nil {
 		log.Fatalf("nflog_bind_group failed: %s", nflogError(err))
 	}
